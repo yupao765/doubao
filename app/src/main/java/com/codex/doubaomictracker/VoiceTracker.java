@@ -29,8 +29,12 @@ public class VoiceTracker {
 
     private final Listener listener;
     private final Gate gate;
+    private final Object stateLock = new Object();
     private volatile boolean running;
+    private volatile boolean speaking;
+    private volatile long lastVoiceAt;
     private Thread worker;
+    private Thread silenceWatcher;
     private AudioRecord recorder;
 
     public VoiceTracker(Listener listener) {
@@ -47,8 +51,12 @@ public class VoiceTracker {
             return;
         }
         running = true;
+        speaking = false;
+        lastVoiceAt = 0L;
         worker = new Thread(this::captureLoop, "DoubaoVoiceTracker");
+        silenceWatcher = new Thread(this::watchSilenceTimeout, "DoubaoSilenceWatcher");
         worker.start();
+        silenceWatcher.start();
     }
 
     public synchronized void stop() {
@@ -60,10 +68,10 @@ public class VoiceTracker {
             } catch (IllegalStateException ignored) {
             }
         }
+        signalSilenceIfNeeded();
     }
 
     private void captureLoop() {
-        boolean speaking = false;
         try {
             int minBufferBytes = AudioRecord.getMinBufferSize(
                     SAMPLE_RATE,
@@ -117,10 +125,7 @@ public class VoiceTracker {
 
                 if (suppressed) {
                     activeFrames = 0;
-                    if (speaking) {
-                        speaking = false;
-                        listener.onSilence();
-                    }
+                    signalSilenceIfNeeded();
                     if (now - lastSuppressedNoticeAt > 900L) {
                         listener.onSuppressedByPlayback();
                         lastSuppressedNoticeAt = now;
@@ -132,19 +137,13 @@ public class VoiceTracker {
 
                 if (voiceNow) {
                     activeFrames++;
-                    lastVoiceAt = now;
                 } else {
                     activeFrames = 0;
                     ambient = ambient * 0.98f + rms * 0.02f;
                 }
 
-                if (!speaking && activeFrames >= 1) {
-                    speaking = true;
-                    listener.onVoiceStarted();
-                } else if (speaking && now - lastVoiceAt >= SILENCE_RELEASE_MS) {
-                    speaking = false;
-                    activeFrames = 0;
-                    listener.onSilence();
+                if (activeFrames >= 1) {
+                    signalVoice(now);
                 }
             }
         } catch (SecurityException e) {
@@ -152,10 +151,57 @@ public class VoiceTracker {
         } catch (Exception e) {
             notifyError("麦克风监听异常：" + e.getMessage());
         } finally {
-            if (speaking) {
+            signalSilenceIfNeeded();
+            releaseRecorder();
+        }
+    }
+
+    private void watchSilenceTimeout() {
+        while (running) {
+            boolean shouldRelease = false;
+            synchronized (stateLock) {
+                shouldRelease = speaking
+                        && lastVoiceAt > 0L
+                        && System.currentTimeMillis() - lastVoiceAt >= SILENCE_RELEASE_MS;
+                if (shouldRelease) {
+                    speaking = false;
+                }
+            }
+            if (shouldRelease) {
                 listener.onSilence();
             }
-            releaseRecorder();
+            try {
+                Thread.sleep(100L);
+            } catch (InterruptedException ignored) {
+                return;
+            }
+        }
+    }
+
+    private void signalVoice(long now) {
+        boolean shouldStart = false;
+        synchronized (stateLock) {
+            lastVoiceAt = now;
+            if (!speaking) {
+                speaking = true;
+                shouldStart = true;
+            }
+        }
+        if (shouldStart) {
+            listener.onVoiceStarted();
+        }
+    }
+
+    private void signalSilenceIfNeeded() {
+        boolean shouldRelease = false;
+        synchronized (stateLock) {
+            if (speaking) {
+                speaking = false;
+                shouldRelease = true;
+            }
+        }
+        if (shouldRelease) {
+            listener.onSilence();
         }
     }
 
