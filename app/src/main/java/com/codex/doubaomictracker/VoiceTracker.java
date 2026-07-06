@@ -11,20 +11,35 @@ public class VoiceTracker {
 
         void onSilence();
 
+        void onSuppressedByPlayback();
+
+        void onVolumeLevel(float rms, float threshold, boolean speaking, boolean suppressed);
+
         void onError(String message);
+    }
+
+    public interface Gate {
+        boolean shouldSuppressVoice();
     }
 
     private static final int SAMPLE_RATE = 16000;
     private static final long SILENCE_RELEASE_MS = 2000L;
-    private static final float MIN_SPEECH_RMS = 0.018f;
+    private static final float MIN_SPEECH_RMS = 0.008f;
+    private static final float AMBIENT_MULTIPLIER = 2.0f;
 
     private final Listener listener;
+    private final Gate gate;
     private volatile boolean running;
     private Thread worker;
     private AudioRecord recorder;
 
     public VoiceTracker(Listener listener) {
+        this(listener, null);
+    }
+
+    public VoiceTracker(Listener listener, Gate gate) {
         this.listener = listener;
+        this.gate = gate;
     }
 
     public synchronized void start() {
@@ -83,9 +98,10 @@ public class VoiceTracker {
 
             recorder.startRecording();
 
-            float ambient = 0.010f;
+            float ambient = 0.003f;
             int activeFrames = 0;
             long lastVoiceAt = 0L;
+            long lastSuppressedNoticeAt = 0L;
 
             while (running) {
                 int read = recorder.read(buffer, 0, buffer.length, AudioRecord.READ_BLOCKING);
@@ -94,19 +110,35 @@ public class VoiceTracker {
                 }
 
                 float rms = calculateRms(buffer, read);
-                float threshold = Math.max(MIN_SPEECH_RMS, ambient * 2.6f);
-                boolean voiceNow = rms > threshold;
+                float threshold = Math.max(MIN_SPEECH_RMS, ambient * AMBIENT_MULTIPLIER);
                 long now = System.currentTimeMillis();
+                boolean suppressed = gate != null && gate.shouldSuppressVoice();
+                listener.onVolumeLevel(rms, threshold, speaking, suppressed);
+
+                if (suppressed) {
+                    activeFrames = 0;
+                    if (speaking) {
+                        speaking = false;
+                        listener.onSilence();
+                    }
+                    if (now - lastSuppressedNoticeAt > 900L) {
+                        listener.onSuppressedByPlayback();
+                        lastSuppressedNoticeAt = now;
+                    }
+                    continue;
+                }
+
+                boolean voiceNow = rms > threshold;
 
                 if (voiceNow) {
                     activeFrames++;
                     lastVoiceAt = now;
                 } else {
                     activeFrames = 0;
-                    ambient = ambient * 0.96f + rms * 0.04f;
+                    ambient = ambient * 0.98f + rms * 0.02f;
                 }
 
-                if (!speaking && activeFrames >= 2) {
+                if (!speaking && activeFrames >= 1) {
                     speaking = true;
                     listener.onVoiceStarted();
                 } else if (speaking && now - lastVoiceAt >= SILENCE_RELEASE_MS) {
