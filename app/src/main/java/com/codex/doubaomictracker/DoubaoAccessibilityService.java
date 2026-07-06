@@ -34,6 +34,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     private static final int NOTIFICATION_ID = 2301;
     private static final long HOLD_CHUNK_MS = 300L;
     private static final long PLAYBACK_GUARD_MS = 900L;
+    private static final String DOUBAO_PACKAGE = "com.larus.nova";
     private static DoubaoAccessibilityService instance;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -46,6 +47,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     private Button stopButton;
     private VoiceTracker voiceTracker;
     private boolean tracking;
+    private volatile String foregroundPackage = "";
     private long lastPlaybackAt;
     private long lastVolumeStatusAt;
     private GestureDescription.StrokeDescription activeStroke;
@@ -75,6 +77,13 @@ public class DoubaoAccessibilityService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (event != null && event.getPackageName() != null) {
+            foregroundPackage = event.getPackageName().toString();
+            if (tracking && !isDoubaoForeground()) {
+                releaseHold();
+                setStatus("等待豆包前台");
+            }
+        }
     }
 
     @Override
@@ -215,7 +224,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
 
             @Override
             public void onSuppressedByPlayback() {
-                setStatus("豆包播放中，暂停触发");
+                setStatus(isDoubaoForeground() ? "豆包播放中，暂停触发" : "等待豆包前台");
             }
 
             @Override
@@ -225,7 +234,9 @@ public class DoubaoAccessibilityService extends AccessibilityService {
                     return;
                 }
                 lastVolumeStatusAt = now;
-                if (suppressed) {
+                if (!isDoubaoForeground()) {
+                    setStatus("等待豆包前台");
+                } else if (suppressed) {
                     setStatus("播放中暂停 音量 " + formatPercent(rms));
                 } else if (speaking) {
                     setStatus("人声 " + formatPercent(rms) + "，按住中");
@@ -245,7 +256,8 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         voiceTracker.start();
         tracking = true;
         updateButtons();
-        setStatus("监听中");
+        refreshForegroundPackageFromRoot();
+        setStatus(isDoubaoForeground() ? "监听中" : "等待豆包前台");
         Toast.makeText(this, "已开始监听人声", Toast.LENGTH_SHORT).show();
     }
 
@@ -264,6 +276,12 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     }
 
     private void beginHoldOnMain() {
+        refreshForegroundPackageFromRoot();
+        if (!isDoubaoForeground()) {
+            holdWanted = false;
+            setStatus("等待豆包前台");
+            return;
+        }
         holdWanted = true;
         if (holding) {
             return;
@@ -368,6 +386,10 @@ public class DoubaoAccessibilityService extends AccessibilityService {
 
     private boolean shouldSuppressVoice() {
         long now = System.currentTimeMillis();
+        if (!isDoubaoForeground()) {
+            lastPlaybackAt = 0L;
+            return true;
+        }
         if (audioManager != null && audioManager.isMusicActive()) {
             lastPlaybackAt = now;
             return true;
@@ -517,6 +539,17 @@ public class DoubaoAccessibilityService extends AccessibilityService {
 
     private String safeText(CharSequence value) {
         return value == null ? "" : value.toString();
+    }
+
+    private boolean isDoubaoForeground() {
+        return DOUBAO_PACKAGE.equals(foregroundPackage);
+    }
+
+    private void refreshForegroundPackageFromRoot() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root != null && root.getPackageName() != null) {
+            foregroundPackage = root.getPackageName().toString();
+        }
     }
 
     private String formatPercent(float value) {
