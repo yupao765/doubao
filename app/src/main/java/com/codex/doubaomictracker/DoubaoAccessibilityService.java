@@ -39,6 +39,8 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     private static DoubaoAccessibilityService instance;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable holdTickRunnable = this::dispatchHoldTick;
+    private final Runnable releaseTickRunnable = this::dispatchReleaseStroke;
     private AudioManager audioManager;
     private WindowManager windowManager;
     private WindowManager.LayoutParams overlayParams;
@@ -127,8 +129,11 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     public void releaseHold() {
         mainHandler.post(() -> {
             holdWanted = false;
-            if (holding && !gestureInFlight) {
-                dispatchNextStroke(false);
+            mainHandler.removeCallbacks(holdTickRunnable);
+            mainHandler.removeCallbacks(releaseTickRunnable);
+            if (holding) {
+                setStatus("正在松开发送");
+                mainHandler.postDelayed(releaseTickRunnable, HOLD_CHUNK_MS + 80L);
             }
             mainHandler.postDelayed(this::forceReleaseIfStillHeld, HOLD_CHUNK_MS + 250L);
         });
@@ -316,26 +321,23 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         holdX = target.x;
         holdY = target.y;
         holding = true;
-        gestureInFlight = false;
         activeStroke = null;
-        dispatchNextStroke(true);
+        dispatchHoldTick();
     }
 
-    private void dispatchNextStroke(boolean keepHolding) {
-        if (!holding) {
+    private void dispatchHoldTick() {
+        if (!holding || !holdWanted) {
             return;
         }
 
         Path path = new Path();
         path.moveTo(holdX, holdY);
 
-        final boolean finishing = !keepHolding;
         GestureDescription.StrokeDescription stroke;
         if (activeStroke == null) {
             stroke = new GestureDescription.StrokeDescription(path, 0, HOLD_CHUNK_MS, true);
         } else {
-            long duration = keepHolding ? HOLD_CHUNK_MS : 80L;
-            stroke = activeStroke.continueStroke(path, 0, duration, keepHolding);
+            stroke = activeStroke.continueStroke(path, 0, HOLD_CHUNK_MS, true);
         }
         activeStroke = stroke;
 
@@ -348,31 +350,73 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             @Override
             public void onCompleted(GestureDescription gestureDescription) {
                 super.onCompleted(gestureDescription);
-                mainHandler.post(() -> {
-                    gestureInFlight = false;
-                    if (finishing) {
-                        resetHoldState();
-                    } else if (holdWanted) {
-                        dispatchNextStroke(true);
-                    } else {
-                        dispatchNextStroke(false);
-                    }
-                });
+                mainHandler.post(() -> gestureInFlight = false);
             }
 
             @Override
             public void onCancelled(GestureDescription gestureDescription) {
                 super.onCancelled(gestureDescription);
-                mainHandler.post(DoubaoAccessibilityService.this::resetHoldState);
+                mainHandler.post(() -> {
+                    gestureInFlight = false;
+                    if (!holdWanted) {
+                        resetHoldState();
+                    }
+                });
             }
         }, mainHandler);
 
         if (!accepted) {
             resetHoldState();
+            return;
         }
+        mainHandler.removeCallbacks(holdTickRunnable);
+        mainHandler.postDelayed(holdTickRunnable, HOLD_CHUNK_MS + 40L);
+    }
+
+    private void dispatchReleaseStroke() {
+        if (!holding || holdWanted) {
+            return;
+        }
+
+        if (activeStroke == null) {
+            resetHoldState();
+            return;
+        }
+
+        Path path = new Path();
+        path.moveTo(holdX, holdY);
+        GestureDescription.StrokeDescription stroke = activeStroke.continueStroke(path, 0, 80L, false);
+        activeStroke = stroke;
+
+        GestureDescription gesture = new GestureDescription.Builder()
+                .addStroke(stroke)
+                .build();
+
+        gestureInFlight = true;
+        boolean accepted = dispatchGesture(gesture, new GestureResultCallback() {
+            @Override
+            public void onCompleted(GestureDescription gestureDescription) {
+                super.onCompleted(gestureDescription);
+                mainHandler.post(DoubaoAccessibilityService.this::resetHoldState);
+            }
+
+            @Override
+            public void onCancelled(GestureDescription gestureDescription) {
+                super.onCancelled(gestureDescription);
+                mainHandler.post(DoubaoAccessibilityService.this::forceReleaseIfStillHeld);
+            }
+        }, mainHandler);
+
+        if (!accepted) {
+            forceReleaseIfStillHeld();
+            return;
+        }
+        mainHandler.postDelayed(this::forceReleaseIfStillHeld, HOLD_CHUNK_MS + 350L);
     }
 
     private void resetHoldState() {
+        mainHandler.removeCallbacks(holdTickRunnable);
+        mainHandler.removeCallbacks(releaseTickRunnable);
         holding = false;
         holdWanted = false;
         gestureInFlight = false;
@@ -390,6 +434,8 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         if (!holding || holdWanted) {
             return;
         }
+        mainHandler.removeCallbacks(holdTickRunnable);
+        mainHandler.removeCallbacks(releaseTickRunnable);
         Path path = new Path();
         path.moveTo(holdX, holdY);
         GestureDescription gesture = new GestureDescription.Builder()
