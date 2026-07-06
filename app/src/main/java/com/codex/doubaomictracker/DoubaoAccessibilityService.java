@@ -24,6 +24,7 @@ import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -48,6 +49,16 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     private VoiceTracker voiceTracker;
     private boolean tracking;
     private volatile String foregroundPackage = "";
+    private volatile boolean doubaoForeground;
+    private final Runnable foregroundRefreshRunnable = new Runnable() {
+        @Override
+        public void run() {
+            refreshForegroundState();
+            if (tracking) {
+                mainHandler.postDelayed(this, 500L);
+            }
+        }
+    };
     private long lastPlaybackAt;
     private long lastVolumeStatusAt;
     private GestureDescription.StrokeDescription activeStroke;
@@ -79,9 +90,12 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event != null && event.getPackageName() != null) {
             foregroundPackage = event.getPackageName().toString();
-            if (tracking && !isDoubaoForeground()) {
+        }
+        if (tracking) {
+            refreshForegroundState();
+            if (!isDoubaoForeground()) {
                 releaseHold();
-                setStatus("等待豆包前台");
+                setWaitingForDoubaoStatus();
             }
         }
     }
@@ -224,7 +238,11 @@ public class DoubaoAccessibilityService extends AccessibilityService {
 
             @Override
             public void onSuppressedByPlayback() {
-                setStatus(isDoubaoForeground() ? "豆包播放中，暂停触发" : "等待豆包前台");
+                if (isDoubaoForeground()) {
+                    setStatus("豆包播放中，暂停触发");
+                } else {
+                    setWaitingForDoubaoStatus();
+                }
             }
 
             @Override
@@ -235,7 +253,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
                 }
                 lastVolumeStatusAt = now;
                 if (!isDoubaoForeground()) {
-                    setStatus("等待豆包前台");
+                    setWaitingForDoubaoStatus();
                 } else if (suppressed) {
                     setStatus("播放中暂停 音量 " + formatPercent(rms));
                 } else if (speaking) {
@@ -256,13 +274,20 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         voiceTracker.start();
         tracking = true;
         updateButtons();
-        refreshForegroundPackageFromRoot();
-        setStatus(isDoubaoForeground() ? "监听中" : "等待豆包前台");
+        refreshForegroundState();
+        mainHandler.removeCallbacks(foregroundRefreshRunnable);
+        mainHandler.postDelayed(foregroundRefreshRunnable, 500L);
+        if (isDoubaoForeground()) {
+            setStatus("监听中");
+        } else {
+            setWaitingForDoubaoStatus();
+        }
         Toast.makeText(this, "已开始监听人声", Toast.LENGTH_SHORT).show();
     }
 
     private void stopTracking(boolean keepBasicForeground) {
         tracking = false;
+        mainHandler.removeCallbacks(foregroundRefreshRunnable);
         if (voiceTracker != null) {
             voiceTracker.stop();
             voiceTracker = null;
@@ -276,10 +301,10 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     }
 
     private void beginHoldOnMain() {
-        refreshForegroundPackageFromRoot();
+        refreshForegroundState();
         if (!isDoubaoForeground()) {
             holdWanted = false;
-            setStatus("等待豆包前台");
+            setWaitingForDoubaoStatus();
             return;
         }
         holdWanted = true;
@@ -353,7 +378,11 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         gestureInFlight = false;
         activeStroke = null;
         if (tracking) {
-            setStatus("监听中");
+            if (isDoubaoForeground()) {
+                setStatus("监听中");
+            } else {
+                setWaitingForDoubaoStatus();
+            }
         }
     }
 
@@ -403,6 +432,15 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         Candidate best = null;
         if (root != null) {
             best = findBestCandidate(root, screen, null);
+        }
+        if (best == null) {
+            for (AccessibilityWindowInfo window : getWindows()) {
+                AccessibilityNodeInfo windowRoot = window.getRoot();
+                best = findBestCandidate(windowRoot, screen, best);
+                if (best != null) {
+                    break;
+                }
+            }
         }
         if (best != null) {
             return new TargetPoint(best.bounds.centerX(), best.bounds.centerY());
@@ -542,14 +580,75 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     }
 
     private boolean isDoubaoForeground() {
-        return DOUBAO_PACKAGE.equals(foregroundPackage);
+        return doubaoForeground;
     }
 
-    private void refreshForegroundPackageFromRoot() {
+    private void refreshForegroundState() {
+        boolean found = false;
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root != null && root.getPackageName() != null) {
             foregroundPackage = root.getPackageName().toString();
+            found = isDoubaoRoot(root);
         }
+        if (!found) {
+            for (AccessibilityWindowInfo window : getWindows()) {
+                AccessibilityNodeInfo windowRoot = window.getRoot();
+                if (windowRoot == null) {
+                    continue;
+                }
+                if (windowRoot.getPackageName() != null && window.isActive()) {
+                    foregroundPackage = windowRoot.getPackageName().toString();
+                }
+                if (isDoubaoRoot(windowRoot)) {
+                    if (windowRoot.getPackageName() != null) {
+                        foregroundPackage = windowRoot.getPackageName().toString();
+                    }
+                    found = true;
+                    break;
+                }
+            }
+        }
+        doubaoForeground = found;
+    }
+
+    private boolean isDoubaoRoot(AccessibilityNodeInfo root) {
+        if (root == null) {
+            return false;
+        }
+        String packageName = safeText(root.getPackageName());
+        if (DOUBAO_PACKAGE.equals(packageName)) {
+            return true;
+        }
+        DoubaoMarker marker = scanDoubaoMarker(root, new DoubaoMarker(), 0);
+        return marker.hasPressToTalk && marker.hasAiGeneratedHint;
+    }
+
+    private DoubaoMarker scanDoubaoMarker(AccessibilityNodeInfo node, DoubaoMarker marker, int depth) {
+        if (node == null || depth > 80 || (marker.hasPressToTalk && marker.hasAiGeneratedHint)) {
+            return marker;
+        }
+        String compact = (safeText(node.getText()) + safeText(node.getContentDescription())).replace(" ", "");
+        if (compact.contains("按住说话") || (compact.contains("按住") && compact.contains("说话"))) {
+            marker.hasPressToTalk = true;
+        }
+        if (compact.contains("内容由AI生成")
+                || compact.contains("AI生成")
+                || compact.contains("豆包P")
+                || compact.contains("视频通话")
+                || compact.contains("打电话")) {
+            marker.hasAiGeneratedHint = true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            scanDoubaoMarker(node.getChild(i), marker, depth + 1);
+        }
+        return marker;
+    }
+
+    private void setWaitingForDoubaoStatus() {
+        String suffix = foregroundPackage == null || foregroundPackage.isEmpty()
+                ? ""
+                : " " + foregroundPackage;
+        setStatus("等待豆包前台" + suffix);
     }
 
     private String formatPercent(float value) {
@@ -632,5 +731,10 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             this.score = score;
             this.bounds = bounds;
         }
+    }
+
+    private static final class DoubaoMarker {
+        boolean hasPressToTalk;
+        boolean hasAiGeneratedHint;
     }
 }
