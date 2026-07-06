@@ -14,6 +14,7 @@ import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
+import android.media.AudioManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -25,22 +26,28 @@ import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 
 public class DoubaoAccessibilityService extends AccessibilityService {
     private static final String CHANNEL_ID = "doubao_mic_tracker";
     private static final int NOTIFICATION_ID = 2301;
     private static final long HOLD_CHUNK_MS = 300L;
+    private static final long PLAYBACK_GUARD_MS = 900L;
     private static DoubaoAccessibilityService instance;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private AudioManager audioManager;
     private WindowManager windowManager;
     private WindowManager.LayoutParams overlayParams;
     private View overlayView;
+    private TextView statusView;
     private Button startButton;
     private Button stopButton;
     private VoiceTracker voiceTracker;
     private boolean tracking;
+    private long lastPlaybackAt;
+    private long lastVolumeStatusAt;
     private GestureDescription.StrokeDescription activeStroke;
     private boolean holding;
     private boolean holdWanted;
@@ -60,6 +67,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     protected void onServiceConnected() {
         super.onServiceConnected();
         instance = this;
+        audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         createNotificationChannel();
         startBasicForeground();
         showOverlay();
@@ -105,10 +113,22 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     private void installOverlay() {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         LinearLayout container = new LinearLayout(this);
-        container.setOrientation(LinearLayout.HORIZONTAL);
+        container.setOrientation(LinearLayout.VERTICAL);
         container.setGravity(Gravity.CENTER);
         container.setPadding(dp(8), dp(8), dp(8), dp(8));
         container.setBackground(makeBackground(0xEE111827, dp(10)));
+
+        statusView = new TextView(this);
+        statusView.setText("待启动");
+        statusView.setTextColor(Color.WHITE);
+        statusView.setTextSize(12);
+        statusView.setGravity(Gravity.CENTER);
+        statusView.setPadding(dp(4), 0, dp(4), dp(6));
+        container.addView(statusView, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER);
 
         startButton = makeOverlayButton("启用麦克风跟踪", true);
         stopButton = makeOverlayButton("结束跟踪", false);
@@ -116,8 +136,9 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         startButton.setOnClickListener(v -> startTracking());
         stopButton.setOnClickListener(v -> stopTracking(true));
 
-        container.addView(startButton);
-        container.addView(stopButton);
+        row.addView(startButton);
+        row.addView(stopButton);
+        container.addView(row);
         container.setOnTouchListener(new DragTouchListener());
 
         overlayParams = new WindowManager.LayoutParams(
@@ -179,12 +200,37 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         voiceTracker = new VoiceTracker(new VoiceTracker.Listener() {
             @Override
             public void onVoiceStarted() {
-                mainHandler.post(DoubaoAccessibilityService.this::beginHoldOnMain);
+                mainHandler.post(() -> {
+                    setStatus("检测到人声，按住中");
+                    beginHoldOnMain();
+                });
             }
 
             @Override
             public void onSilence() {
+                setStatus("监听中");
                 releaseHold();
+            }
+
+            @Override
+            public void onSuppressedByPlayback() {
+                setStatus("豆包播放中，暂停触发");
+            }
+
+            @Override
+            public void onVolumeLevel(float rms, float threshold, boolean speaking, boolean suppressed) {
+                long now = System.currentTimeMillis();
+                if (now - lastVolumeStatusAt < 350L) {
+                    return;
+                }
+                lastVolumeStatusAt = now;
+                if (suppressed) {
+                    setStatus("播放中暂停 音量 " + formatPercent(rms));
+                } else if (speaking) {
+                    setStatus("人声 " + formatPercent(rms) + "，按住中");
+                } else {
+                    setStatus("音量 " + formatPercent(rms) + " / 阈值 " + formatPercent(threshold));
+                }
             }
 
             @Override
@@ -194,10 +240,11 @@ public class DoubaoAccessibilityService extends AccessibilityService {
                     stopTracking(true);
                 });
             }
-        });
+        }, this::shouldSuppressVoice);
         voiceTracker.start();
         tracking = true;
         updateButtons();
+        setStatus("监听中");
         Toast.makeText(this, "已开始监听人声", Toast.LENGTH_SHORT).show();
     }
 
@@ -212,6 +259,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             startBasicForeground();
         }
         updateButtons();
+        setStatus("已停止");
     }
 
     private void beginHoldOnMain() {
@@ -285,6 +333,18 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         holdWanted = false;
         gestureInFlight = false;
         activeStroke = null;
+        if (tracking) {
+            setStatus("监听中");
+        }
+    }
+
+    private boolean shouldSuppressVoice() {
+        long now = System.currentTimeMillis();
+        if (audioManager != null && audioManager.isMusicActive()) {
+            lastPlaybackAt = now;
+            return true;
+        }
+        return now - lastPlaybackAt < PLAYBACK_GUARD_MS;
     }
 
     private TargetPoint findDoubaoPressTarget() {
@@ -407,6 +467,14 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         });
     }
 
+    private void setStatus(String text) {
+        mainHandler.post(() -> {
+            if (statusView != null) {
+                statusView.setText(text);
+            }
+        });
+    }
+
     private boolean hasAudioPermission() {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.M
                 || checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
@@ -421,6 +489,11 @@ public class DoubaoAccessibilityService extends AccessibilityService {
 
     private String safeText(CharSequence value) {
         return value == null ? "" : value.toString();
+    }
+
+    private String formatPercent(float value) {
+        int percent = Math.max(0, Math.min(99, Math.round(value * 100f)));
+        return percent + "%";
     }
 
     private ScreenSize getScreenSize() {
