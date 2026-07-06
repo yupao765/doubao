@@ -107,6 +107,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             if (holding && !gestureInFlight) {
                 dispatchNextStroke(false);
             }
+            mainHandler.postDelayed(this::forceReleaseIfStillHeld, HOLD_CHUNK_MS + 250L);
         });
     }
 
@@ -290,7 +291,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         if (activeStroke == null) {
             stroke = new GestureDescription.StrokeDescription(path, 0, HOLD_CHUNK_MS, true);
         } else {
-            long duration = keepHolding ? HOLD_CHUNK_MS : 1L;
+            long duration = keepHolding ? HOLD_CHUNK_MS : 80L;
             stroke = activeStroke.continueStroke(path, 0, duration, keepHolding);
         }
         activeStroke = stroke;
@@ -335,6 +336,33 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         activeStroke = null;
         if (tracking) {
             setStatus("监听中");
+        }
+    }
+
+    private void forceReleaseIfStillHeld() {
+        if (!holding || holdWanted) {
+            return;
+        }
+        Path path = new Path();
+        path.moveTo(holdX, holdY);
+        GestureDescription gesture = new GestureDescription.Builder()
+                .addStroke(new GestureDescription.StrokeDescription(path, 0, 40L, false))
+                .build();
+        boolean accepted = dispatchGesture(gesture, new GestureResultCallback() {
+            @Override
+            public void onCompleted(GestureDescription gestureDescription) {
+                super.onCompleted(gestureDescription);
+                mainHandler.post(DoubaoAccessibilityService.this::resetHoldState);
+            }
+
+            @Override
+            public void onCancelled(GestureDescription gestureDescription) {
+                super.onCancelled(gestureDescription);
+                mainHandler.post(DoubaoAccessibilityService.this::resetHoldState);
+            }
+        }, mainHandler);
+        if (!accepted) {
+            resetHoldState();
         }
     }
 
