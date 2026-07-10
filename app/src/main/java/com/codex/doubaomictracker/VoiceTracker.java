@@ -24,7 +24,8 @@ public class VoiceTracker {
     }
 
     private static final int SAMPLE_RATE = 16000;
-    private static final long SILENCE_RELEASE_MS = 2000L;
+    private static final int FRAME_DURATION_MS = 100;
+    private static final long STALLED_AUDIO_RELEASE_MS = 2000L;
 
     private final Context context;
     private final Listener listener;
@@ -33,6 +34,8 @@ public class VoiceTracker {
     private volatile boolean running;
     private volatile boolean speaking;
     private volatile long lastVoiceAt;
+    private volatile long lastAudioFrameAt;
+    private volatile long quietSince;
     private Thread worker;
     private Thread silenceWatcher;
     private AudioRecord recorder;
@@ -50,6 +53,8 @@ public class VoiceTracker {
         running = true;
         speaking = false;
         lastVoiceAt = 0L;
+        lastAudioFrameAt = 0L;
+        quietSince = 0L;
         worker = new Thread(this::captureLoop, "DoubaoVoiceTracker");
         silenceWatcher = new Thread(this::watchSilenceTimeout, "DoubaoSilenceWatcher");
         worker.start();
@@ -83,7 +88,10 @@ public class VoiceTracker {
                 return;
             }
 
-            int bufferBytes = Math.max(minBufferBytes, SAMPLE_RATE / 5 * 2);
+            int bufferBytes = Math.max(
+                    minBufferBytes,
+                    SAMPLE_RATE * FRAME_DURATION_MS / 1000 * 2
+            );
             short[] buffer = new short[bufferBytes / 2];
 
             AudioRecord.Builder builder = new AudioRecord.Builder()
@@ -121,6 +129,7 @@ public class VoiceTracker {
                         ambient * TrackerSettings.ambientMultiplier(context)
                 );
                 long now = System.currentTimeMillis();
+                lastAudioFrameAt = now;
                 boolean suppressed = gate != null && gate.shouldSuppressVoice();
 
                 if (suppressed) {
@@ -133,14 +142,24 @@ public class VoiceTracker {
                     continue;
                 }
 
-                boolean voiceNow = speaking
-                        ? rms > threshold * 0.72f
-                        : rms > threshold;
-
-                if (voiceNow) {
-                    signalVoice(now);
-                } else if (!speaking) {
-                    ambient = ambient * 0.97f + Math.min(rms, threshold) * 0.03f;
+                if (!speaking) {
+                    if (rms > threshold) {
+                        signalVoice(now);
+                    } else {
+                        ambient = ambient * 0.97f + Math.min(rms, threshold) * 0.03f;
+                    }
+                } else {
+                    float endingThreshold = TrackerSettings.endingVolumeRms(context);
+                    if (rms >= endingThreshold) {
+                        signalVoice(now);
+                    } else {
+                        if (quietSince == 0L) {
+                            quietSince = now;
+                        }
+                        if (now - quietSince >= TrackerSettings.getReleaseDelayMs(context)) {
+                            signalSilenceIfNeeded();
+                        }
+                    }
                 }
 
                 listener.onVolumeLevel(rms, threshold, speaking, false);
@@ -161,11 +180,18 @@ public class VoiceTracker {
         while (running) {
             boolean shouldRelease;
             synchronized (stateLock) {
-                shouldRelease = speaking
+                long now = System.currentTimeMillis();
+                long releaseDelayMs = TrackerSettings.getReleaseDelayMs(context);
+                boolean volumeDropped = quietSince > 0L
+                        && now - quietSince >= releaseDelayMs;
+                boolean audioReadStalled = lastAudioFrameAt > 0L
+                        && now - lastAudioFrameAt >= releaseDelayMs
                         && lastVoiceAt > 0L
-                        && System.currentTimeMillis() - lastVoiceAt >= SILENCE_RELEASE_MS;
+                        && now - lastVoiceAt >= STALLED_AUDIO_RELEASE_MS;
+                shouldRelease = speaking && (volumeDropped || audioReadStalled);
                 if (shouldRelease) {
                     speaking = false;
+                    quietSince = 0L;
                 }
             }
             if (shouldRelease) {
@@ -183,6 +209,7 @@ public class VoiceTracker {
         boolean shouldStart = false;
         synchronized (stateLock) {
             lastVoiceAt = now;
+            quietSince = 0L;
             if (!speaking) {
                 speaking = true;
                 shouldStart = true;
@@ -198,6 +225,7 @@ public class VoiceTracker {
         synchronized (stateLock) {
             if (speaking) {
                 speaking = false;
+                quietSince = 0L;
                 shouldRelease = true;
             }
         }

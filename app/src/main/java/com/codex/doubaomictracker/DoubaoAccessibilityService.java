@@ -32,6 +32,8 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.util.Locale;
+
 public class DoubaoAccessibilityService extends AccessibilityService {
     private static final String CHANNEL_ID = "doubao_mic_tracker";
     private static final int NOTIFICATION_ID = 2301;
@@ -150,7 +152,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         container.setBackground(makeBackground(0xEE111827, dp(10)));
 
         statusView = new TextView(this);
-        statusView.setText("待启动 · 灵敏度 " + TrackerSettings.getSensitivity(this));
+        statusView.setText("待启动 · " + formatTrackerSettings());
         statusView.setTextColor(Color.WHITE);
         statusView.setTextSize(12);
         statusView.setGravity(Gravity.CENTER);
@@ -232,8 +234,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             @Override
             public void onVoiceStarted() {
                 mainHandler.post(() -> {
-                    setStatus("检测到人声，按住中 · 灵敏度 "
-                            + TrackerSettings.getSensitivity(DoubaoAccessibilityService.this));
+                    setStatus("检测到人声，按住中 · " + formatTrackerSettings());
                     beginHoldOnMain();
                 });
             }
@@ -265,11 +266,10 @@ public class DoubaoAccessibilityService extends AccessibilityService {
                 } else if (suppressed) {
                     setStatus("播放中暂停 · 音量 " + formatPercent(rms));
                 } else if (speaking) {
-                    setStatus("人声 " + formatPercent(rms) + "，按住中 · 灵敏度 "
-                            + TrackerSettings.getSensitivity(DoubaoAccessibilityService.this));
+                    setStatus("人声 " + formatPercent(rms) + "，按住中 · " + formatEndingSettings());
                 } else {
-                    setStatus("音量 " + formatPercent(rms) + " / 阈值 " + formatPercent(threshold)
-                            + " · 灵敏度 " + TrackerSettings.getSensitivity(DoubaoAccessibilityService.this));
+                    setStatus("音量 " + formatPercent(rms) + " / 触发 " + formatPercent(threshold)
+                            + " · " + formatEndingSettings());
                 }
             }
 
@@ -718,12 +718,22 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     }
 
     private void setListeningStatus() {
-        setStatus("监听中 · 灵敏度 " + TrackerSettings.getSensitivity(this));
+        setStatus("监听中 · " + formatTrackerSettings());
     }
 
     private String formatPercent(float value) {
-        int percent = Math.max(0, Math.min(99, Math.round(value * 100f)));
-        return percent + "%";
+        float percent = Math.max(0f, Math.min(99f, value * 100f));
+        return String.format(Locale.CHINA, "%.1f%%", percent);
+    }
+
+    private String formatTrackerSettings() {
+        return "灵敏度 " + TrackerSettings.getSensitivity(this) + " · " + formatEndingSettings();
+    }
+
+    private String formatEndingSettings() {
+        float endingPercent = TrackerSettings.getEndingVolumeTenthsPercent(this) / 10f;
+        float releaseSeconds = TrackerSettings.getReleaseDelayMs(this) / 1000f;
+        return String.format(Locale.CHINA, "结束<%.1f%% 持续%.1f秒", endingPercent, releaseSeconds);
     }
 
     private ScreenSize getScreenSize() {

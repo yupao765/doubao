@@ -23,6 +23,7 @@ import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 1001;
@@ -30,6 +31,8 @@ public class MainActivity extends Activity {
 
     private TextView permissionStatusView;
     private TextView sensitivityValueView;
+    private TextView endingVolumeValueView;
+    private TextView releaseDelayValueView;
     private Button setupButton;
     private Button overlayButton;
     private Button doubaoButton;
@@ -138,6 +141,93 @@ public class MainActivity extends Activity {
         sensitivityHint.setLineSpacing(dp(3), 1f);
         root.addView(sensitivityHint, matchWrap());
 
+        root.addView(sectionTitle("说完判定"), withTopMargin(dp(22)));
+
+        endingVolumeValueView = text("", 17, 0xFF111827);
+        LinearLayout.LayoutParams endingVolumeParams = matchWrap();
+        endingVolumeParams.setMargins(0, dp(10), 0, 0);
+        root.addView(endingVolumeValueView, endingVolumeParams);
+
+        SeekBar endingVolumeBar = new SeekBar(this);
+        endingVolumeBar.setMax(
+                TrackerSettings.MAX_ENDING_VOLUME_TENTHS_PERCENT
+                        - TrackerSettings.MIN_ENDING_VOLUME_TENTHS_PERCENT
+        );
+        endingVolumeBar.setProgress(
+                TrackerSettings.getEndingVolumeTenthsPercent(this)
+                        - TrackerSettings.MIN_ENDING_VOLUME_TENTHS_PERCENT
+        );
+        endingVolumeBar.setPadding(0, dp(8), 0, dp(4));
+        endingVolumeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                int value = progress + TrackerSettings.MIN_ENDING_VOLUME_TENTHS_PERCENT;
+                TrackerSettings.setEndingVolumeTenthsPercent(MainActivity.this, value);
+                updateEndingVolumeLabel(value);
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                Toast.makeText(MainActivity.this, "结束音量已保存", Toast.LENGTH_SHORT).show();
+            }
+        });
+        root.addView(endingVolumeBar, matchWrap());
+
+        TextView endingVolumeHint = text(
+                "音量低于这个数值时开始计时。环境越吵可适当调高；如果尾音容易被截断就调低。",
+                14,
+                0xFF697386
+        );
+        endingVolumeHint.setLineSpacing(dp(3), 1f);
+        root.addView(endingVolumeHint, matchWrap());
+
+        releaseDelayValueView = text("", 17, 0xFF111827);
+        LinearLayout.LayoutParams releaseDelayParams = matchWrap();
+        releaseDelayParams.setMargins(0, dp(16), 0, 0);
+        root.addView(releaseDelayValueView, releaseDelayParams);
+
+        SeekBar releaseDelayBar = new SeekBar(this);
+        releaseDelayBar.setMax(
+                (TrackerSettings.MAX_RELEASE_DELAY_MS - TrackerSettings.MIN_RELEASE_DELAY_MS)
+                        / TrackerSettings.RELEASE_DELAY_STEP_MS
+        );
+        releaseDelayBar.setProgress(
+                (TrackerSettings.getReleaseDelayMs(this) - TrackerSettings.MIN_RELEASE_DELAY_MS)
+                        / TrackerSettings.RELEASE_DELAY_STEP_MS
+        );
+        releaseDelayBar.setPadding(0, dp(8), 0, dp(4));
+        releaseDelayBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                int value = TrackerSettings.MIN_RELEASE_DELAY_MS
+                        + progress * TrackerSettings.RELEASE_DELAY_STEP_MS;
+                TrackerSettings.setReleaseDelayMs(MainActivity.this, value);
+                updateReleaseDelayLabel(value);
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                Toast.makeText(MainActivity.this, "松手时间已保存", Toast.LENGTH_SHORT).show();
+            }
+        });
+        root.addView(releaseDelayBar, matchWrap());
+
+        TextView releaseDelayHint = text(
+                "低音量连续达到这个时间后松开发送。时间越短反应越快，时间越长越不容易截断停顿。",
+                14,
+                0xFF697386
+        );
+        releaseDelayHint.setLineSpacing(dp(3), 1f);
+        root.addView(releaseDelayHint, matchWrap());
+
         root.addView(sectionTitle("开始使用"), withTopMargin(dp(22)));
 
         doubaoButton = actionButton("打开豆包", true, v -> openDoubao());
@@ -150,6 +240,8 @@ public class MainActivity extends Activity {
         root.addView(note, noteParams);
 
         updateSensitivityLabel(TrackerSettings.getSensitivity(this));
+        updateEndingVolumeLabel(TrackerSettings.getEndingVolumeTenthsPercent(this));
+        updateReleaseDelayLabel(TrackerSettings.getReleaseDelayMs(this));
         updateStatus();
         return scrollView;
     }
@@ -283,6 +375,26 @@ public class MainActivity extends Activity {
             description = "高，小声音也容易触发";
         }
         sensitivityValueView.setText("当前：" + level + " / 10（" + description + "）");
+    }
+
+    private void updateEndingVolumeLabel(int tenthsPercent) {
+        if (endingVolumeValueView == null) {
+            return;
+        }
+        endingVolumeValueView.setText(
+                "低于多少音量算说完："
+                        + String.format(Locale.CHINA, "%.1f%%", tenthsPercent / 10f)
+        );
+    }
+
+    private void updateReleaseDelayLabel(int milliseconds) {
+        if (releaseDelayValueView == null) {
+            return;
+        }
+        releaseDelayValueView.setText(
+                "低音量持续多久松开："
+                        + String.format(Locale.CHINA, "%.1f 秒", milliseconds / 1000f)
+        );
     }
 
     private TextView sectionTitle(String value) {
