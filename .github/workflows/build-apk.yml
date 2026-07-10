@@ -32,11 +32,26 @@ jobs:
           curl -L https://services.gradle.org/distributions/gradle-8.7-bin.zip -o gradle.zip
           unzip -q gradle.zip
 
-      - name: Build debug APK
-        run: ./gradle-8.7/bin/gradle assembleDebug --no-daemon
+      - name: Restore stable signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/doubao-release.p12"
+
+      - name: Build stable APK
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/doubao-release.p12
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradle-8.7/bin/gradle assembleRelease --no-daemon
+
+      - name: Verify APK signature
+        run: apksigner verify --verbose app/build/outputs/apk/release/app-release.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: DoubaoMicTracker-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: DoubaoVoiceFollower-stable-apk
+          path: app/build/outputs/apk/release/app-release.apk

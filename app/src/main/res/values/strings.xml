@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">豆包麦克风跟踪</string>
-    <string name="accessibility_service_label">豆包麦克风跟踪</string>
-    <string name="accessibility_service_desc">用于在检测到人声时按住豆包聊天页底部的按住说话按钮，并在人声停止后松开。</string>
+    <string name="app_name">豆包语音跟随</string>
+    <string name="accessibility_service_label">豆包语音跟随</string>
+    <string name="accessibility_service_desc">只在豆包聊天页位于前台时，根据麦克风人声自动按住或松开按住说话按钮。</string>
 </resources>

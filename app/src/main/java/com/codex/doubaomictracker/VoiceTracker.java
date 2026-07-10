@@ -1,5 +1,6 @@
 package com.codex.doubaomictracker;
 
+import android.content.Context;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
@@ -24,9 +25,8 @@ public class VoiceTracker {
 
     private static final int SAMPLE_RATE = 16000;
     private static final long SILENCE_RELEASE_MS = 2000L;
-    private static final float MIN_SPEECH_RMS = 0.008f;
-    private static final float AMBIENT_MULTIPLIER = 2.0f;
 
+    private final Context context;
     private final Listener listener;
     private final Gate gate;
     private final Object stateLock = new Object();
@@ -37,11 +37,8 @@ public class VoiceTracker {
     private Thread silenceWatcher;
     private AudioRecord recorder;
 
-    public VoiceTracker(Listener listener) {
-        this(listener, null);
-    }
-
-    public VoiceTracker(Listener listener, Gate gate) {
+    public VoiceTracker(Context context, Listener listener, Gate gate) {
+        this.context = context.getApplicationContext();
         this.listener = listener;
         this.gate = gate;
     }
@@ -67,6 +64,9 @@ public class VoiceTracker {
                 local.stop();
             } catch (IllegalStateException ignored) {
             }
+        }
+        if (silenceWatcher != null) {
+            silenceWatcher.interrupt();
         }
         signalSilenceIfNeeded();
     }
@@ -106,9 +106,7 @@ public class VoiceTracker {
 
             recorder.startRecording();
 
-            float ambient = 0.003f;
-            int activeFrames = 0;
-            long lastVoiceAt = 0L;
+            float ambient = 0.0025f;
             long lastSuppressedNoticeAt = 0L;
 
             while (running) {
@@ -118,14 +116,16 @@ public class VoiceTracker {
                 }
 
                 float rms = calculateRms(buffer, read);
-                float threshold = Math.max(MIN_SPEECH_RMS, ambient * AMBIENT_MULTIPLIER);
+                float threshold = Math.max(
+                        TrackerSettings.minimumSpeechRms(context),
+                        ambient * TrackerSettings.ambientMultiplier(context)
+                );
                 long now = System.currentTimeMillis();
                 boolean suppressed = gate != null && gate.shouldSuppressVoice();
-                listener.onVolumeLevel(rms, threshold, speaking, suppressed);
 
                 if (suppressed) {
-                    activeFrames = 0;
                     signalSilenceIfNeeded();
+                    listener.onVolumeLevel(rms, threshold, false, true);
                     if (now - lastSuppressedNoticeAt > 900L) {
                         listener.onSuppressedByPlayback();
                         lastSuppressedNoticeAt = now;
@@ -133,23 +133,24 @@ public class VoiceTracker {
                     continue;
                 }
 
-                boolean voiceNow = rms > threshold;
+                boolean voiceNow = speaking
+                        ? rms > threshold * 0.72f
+                        : rms > threshold;
 
                 if (voiceNow) {
-                    activeFrames++;
-                } else {
-                    activeFrames = 0;
-                    ambient = ambient * 0.98f + rms * 0.02f;
+                    signalVoice(now);
+                } else if (!speaking) {
+                    ambient = ambient * 0.97f + Math.min(rms, threshold) * 0.03f;
                 }
 
-                if (activeFrames >= 1) {
-                    signalVoice(now);
-                }
+                listener.onVolumeLevel(rms, threshold, speaking, false);
             }
         } catch (SecurityException e) {
             notifyError("没有麦克风权限");
         } catch (Exception e) {
-            notifyError("麦克风监听异常：" + e.getMessage());
+            if (running) {
+                notifyError("麦克风监听异常：" + e.getMessage());
+            }
         } finally {
             signalSilenceIfNeeded();
             releaseRecorder();
@@ -158,7 +159,7 @@ public class VoiceTracker {
 
     private void watchSilenceTimeout() {
         while (running) {
-            boolean shouldRelease = false;
+            boolean shouldRelease;
             synchronized (stateLock) {
                 shouldRelease = speaking
                         && lastVoiceAt > 0L
@@ -171,7 +172,7 @@ public class VoiceTracker {
                 listener.onSilence();
             }
             try {
-                Thread.sleep(100L);
+                Thread.sleep(80L);
             } catch (InterruptedException ignored) {
                 return;
             }

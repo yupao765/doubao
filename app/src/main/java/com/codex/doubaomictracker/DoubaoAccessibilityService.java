@@ -7,6 +7,8 @@ import android.accessibilityservice.GestureDescription;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.graphics.Color;
@@ -39,8 +41,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     private static DoubaoAccessibilityService instance;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final Runnable holdTickRunnable = this::dispatchHoldTick;
-    private final Runnable releaseTickRunnable = this::dispatchReleaseStroke;
+    private final Runnable forceReleaseRunnable = this::forceReleaseIfStillHeld;
     private AudioManager audioManager;
     private WindowManager windowManager;
     private WindowManager.LayoutParams overlayParams;
@@ -129,13 +130,14 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     public void releaseHold() {
         mainHandler.post(() -> {
             holdWanted = false;
-            mainHandler.removeCallbacks(holdTickRunnable);
-            mainHandler.removeCallbacks(releaseTickRunnable);
             if (holding) {
                 setStatus("正在松开发送");
-                mainHandler.postDelayed(releaseTickRunnable, HOLD_CHUNK_MS + 80L);
+                if (!gestureInFlight) {
+                    dispatchReleaseStroke();
+                }
             }
-            mainHandler.postDelayed(this::forceReleaseIfStillHeld, HOLD_CHUNK_MS + 250L);
+            mainHandler.removeCallbacks(forceReleaseRunnable);
+            mainHandler.postDelayed(forceReleaseRunnable, 1500L);
         });
     }
 
@@ -148,7 +150,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         container.setBackground(makeBackground(0xEE111827, dp(10)));
 
         statusView = new TextView(this);
-        statusView.setText("待启动");
+        statusView.setText("待启动 · 灵敏度 " + TrackerSettings.getSensitivity(this));
         statusView.setTextColor(Color.WHITE);
         statusView.setTextSize(12);
         statusView.setGravity(Gravity.CENTER);
@@ -226,18 +228,19 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             return;
         }
 
-        voiceTracker = new VoiceTracker(new VoiceTracker.Listener() {
+        voiceTracker = new VoiceTracker(this, new VoiceTracker.Listener() {
             @Override
             public void onVoiceStarted() {
                 mainHandler.post(() -> {
-                    setStatus("检测到人声，按住中");
+                    setStatus("检测到人声，按住中 · 灵敏度 "
+                            + TrackerSettings.getSensitivity(DoubaoAccessibilityService.this));
                     beginHoldOnMain();
                 });
             }
 
             @Override
             public void onSilence() {
-                setStatus("监听中");
+                setListeningStatus();
                 releaseHold();
             }
 
@@ -260,11 +263,13 @@ public class DoubaoAccessibilityService extends AccessibilityService {
                 if (!isDoubaoForeground()) {
                     setWaitingForDoubaoStatus();
                 } else if (suppressed) {
-                    setStatus("播放中暂停 音量 " + formatPercent(rms));
+                    setStatus("播放中暂停 · 音量 " + formatPercent(rms));
                 } else if (speaking) {
-                    setStatus("人声 " + formatPercent(rms) + "，按住中");
+                    setStatus("人声 " + formatPercent(rms) + "，按住中 · 灵敏度 "
+                            + TrackerSettings.getSensitivity(DoubaoAccessibilityService.this));
                 } else {
-                    setStatus("音量 " + formatPercent(rms) + " / 阈值 " + formatPercent(threshold));
+                    setStatus("音量 " + formatPercent(rms) + " / 阈值 " + formatPercent(threshold)
+                            + " · 灵敏度 " + TrackerSettings.getSensitivity(DoubaoAccessibilityService.this));
                 }
             }
 
@@ -283,7 +288,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         mainHandler.removeCallbacks(foregroundRefreshRunnable);
         mainHandler.postDelayed(foregroundRefreshRunnable, 500L);
         if (isDoubaoForeground()) {
-            setStatus("监听中");
+            setListeningStatus();
         } else {
             setWaitingForDoubaoStatus();
         }
@@ -326,7 +331,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     }
 
     private void dispatchHoldTick() {
-        if (!holding || !holdWanted) {
+        if (!holding || !holdWanted || gestureInFlight) {
             return;
         }
 
@@ -350,7 +355,17 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             @Override
             public void onCompleted(GestureDescription gestureDescription) {
                 super.onCompleted(gestureDescription);
-                mainHandler.post(() -> gestureInFlight = false);
+                mainHandler.post(() -> {
+                    gestureInFlight = false;
+                    if (!holding) {
+                        return;
+                    }
+                    if (holdWanted) {
+                        dispatchHoldTick();
+                    } else {
+                        dispatchReleaseStroke();
+                    }
+                });
             }
 
             @Override
@@ -358,9 +373,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
                 super.onCancelled(gestureDescription);
                 mainHandler.post(() -> {
                     gestureInFlight = false;
-                    if (!holdWanted) {
-                        resetHoldState();
-                    }
+                    resetHoldState();
                 });
             }
         }, mainHandler);
@@ -369,12 +382,10 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             resetHoldState();
             return;
         }
-        mainHandler.removeCallbacks(holdTickRunnable);
-        mainHandler.postDelayed(holdTickRunnable, HOLD_CHUNK_MS + 40L);
     }
 
     private void dispatchReleaseStroke() {
-        if (!holding || holdWanted) {
+        if (!holding || holdWanted || gestureInFlight) {
             return;
         }
 
@@ -411,19 +422,18 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             forceReleaseIfStillHeld();
             return;
         }
-        mainHandler.postDelayed(this::forceReleaseIfStillHeld, HOLD_CHUNK_MS + 350L);
+        mainHandler.postDelayed(forceReleaseRunnable, 900L);
     }
 
     private void resetHoldState() {
-        mainHandler.removeCallbacks(holdTickRunnable);
-        mainHandler.removeCallbacks(releaseTickRunnable);
+        mainHandler.removeCallbacks(forceReleaseRunnable);
         holding = false;
         holdWanted = false;
         gestureInFlight = false;
         activeStroke = null;
         if (tracking) {
             if (isDoubaoForeground()) {
-                setStatus("监听中");
+                setListeningStatus();
             } else {
                 setWaitingForDoubaoStatus();
             }
@@ -434,8 +444,6 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         if (!holding || holdWanted) {
             return;
         }
-        mainHandler.removeCallbacks(holdTickRunnable);
-        mainHandler.removeCallbacks(releaseTickRunnable);
         Path path = new Path();
         path.moveTo(holdX, holdY);
         GestureDescription gesture = new GestureDescription.Builder()
@@ -491,7 +499,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         if (best != null) {
             return new TargetPoint(best.bounds.centerX(), best.bounds.centerY());
         }
-        return new TargetPoint(screen.width / 2f, screen.height - dp(64));
+        return new TargetPoint(screen.width / 2f, screen.height - dp(78));
     }
 
     private Candidate findBestCandidate(AccessibilityNodeInfo node, ScreenSize screen, Candidate best) {
@@ -564,13 +572,21 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     }
 
     private Notification buildNotification(String text) {
+        Intent launchIntent = new Intent(this, MainActivity.class);
+        PendingIntent contentIntent = PendingIntent.getActivity(
+                this,
+                0,
+                launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(this, CHANNEL_ID)
                 : new Notification.Builder(this);
         return builder
-                .setContentTitle("豆包麦克风跟踪")
+                .setContentTitle("豆包语音跟随")
                 .setContentText(text)
                 .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                .setContentIntent(contentIntent)
                 .setOngoing(true)
                 .build();
     }
@@ -581,7 +597,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         }
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
-                "豆包麦克风跟踪",
+                "豆包语音跟随",
                 NotificationManager.IMPORTANCE_LOW
         );
         NotificationManager manager = getSystemService(NotificationManager.class);
@@ -638,6 +654,9 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         }
         if (!found) {
             for (AccessibilityWindowInfo window : getWindows()) {
+                if (!window.isActive() && !window.isFocused()) {
+                    continue;
+                }
                 AccessibilityNodeInfo windowRoot = window.getRoot();
                 if (windowRoot == null) {
                     continue;
@@ -679,6 +698,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         }
         if (compact.contains("内容由AI生成")
                 || compact.contains("AI生成")
+                || compact.contains("豆包")
                 || compact.contains("豆包P")
                 || compact.contains("视频通话")
                 || compact.contains("打电话")) {
@@ -695,6 +715,10 @@ public class DoubaoAccessibilityService extends AccessibilityService {
                 ? ""
                 : " " + foregroundPackage;
         setStatus("等待豆包前台" + suffix);
+    }
+
+    private void setListeningStatus() {
+        setStatus("监听中 · 灵敏度 " + TrackerSettings.getSensitivity(this));
     }
 
     private String formatPercent(float value) {
