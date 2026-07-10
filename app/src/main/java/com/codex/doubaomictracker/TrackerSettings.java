@@ -19,6 +19,7 @@ public final class TrackerSettings {
     private static final String KEY_SENSITIVITY = "microphone_sensitivity";
     private static final String KEY_RELEASE_DELAY_MS = "release_delay_ms";
     private static final String KEY_ENDING_VOLUME = "ending_volume_tenths_percent";
+    private static final String KEY_AUTO_ENDING = "automatic_ending_detection";
 
     private TrackerSettings() {
     }
@@ -63,6 +64,18 @@ public final class TrackerSettings {
 
     public static float endingVolumeRms(Context context) {
         return getEndingVolumeTenthsPercent(context) / 1000f;
+    }
+
+    public static boolean isAutomaticEndingEnabled(Context context) {
+        return context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+                .getBoolean(KEY_AUTO_ENDING, true);
+    }
+
+    public static void setAutomaticEndingEnabled(Context context, boolean enabled) {
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_AUTO_ENDING, enabled)
+                .apply();
     }
 
     public static float minimumSpeechRms(Context context) {

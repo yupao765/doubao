@@ -14,6 +14,8 @@ public class VoiceTracker {
 
         void onSuppressedByPlayback();
 
+        void onEndingCountdown(float rms, float endingThreshold, long remainingMs);
+
         void onVolumeLevel(float rms, float threshold, boolean speaking, boolean suppressed);
 
         void onError(String message);
@@ -25,7 +27,10 @@ public class VoiceTracker {
 
     private static final int SAMPLE_RATE = 16000;
     private static final int FRAME_DURATION_MS = 100;
-    private static final long STALLED_AUDIO_RELEASE_MS = 2000L;
+    private static final float AUTOMATIC_ENDING_AMBIENT_MULTIPLIER = 1.35f;
+    private static final long AUDIO_STALL_FRAME_GAP_MS = 450L;
+    private static final long AUDIO_STALL_FORCE_MIN_MS = 1200L;
+    private static final long MAX_SPEECH_HOLD_MS = 30000L;
 
     private final Context context;
     private final Listener listener;
@@ -36,6 +41,7 @@ public class VoiceTracker {
     private volatile long lastVoiceAt;
     private volatile long lastAudioFrameAt;
     private volatile long quietSince;
+    private volatile long speechStartedAt;
     private Thread worker;
     private Thread silenceWatcher;
     private AudioRecord recorder;
@@ -55,6 +61,7 @@ public class VoiceTracker {
         lastVoiceAt = 0L;
         lastAudioFrameAt = 0L;
         quietSince = 0L;
+        speechStartedAt = 0L;
         worker = new Thread(this::captureLoop, "DoubaoVoiceTracker");
         silenceWatcher = new Thread(this::watchSilenceTimeout, "DoubaoSilenceWatcher");
         worker.start();
@@ -115,6 +122,7 @@ public class VoiceTracker {
             recorder.startRecording();
 
             float ambient = 0.0025f;
+            float smoothedRms = 0f;
             long lastSuppressedNoticeAt = 0L;
 
             while (running) {
@@ -124,6 +132,9 @@ public class VoiceTracker {
                 }
 
                 float rms = calculateRms(buffer, read);
+                smoothedRms = smoothedRms == 0f
+                        ? rms
+                        : smoothedRms * 0.55f + rms * 0.45f;
                 float threshold = Math.max(
                         TrackerSettings.minimumSpeechRms(context),
                         ambient * TrackerSettings.ambientMultiplier(context)
@@ -143,20 +154,27 @@ public class VoiceTracker {
                 }
 
                 if (!speaking) {
-                    if (rms > threshold) {
+                    if (smoothedRms > threshold) {
                         signalVoice(now);
                     } else {
-                        ambient = ambient * 0.97f + Math.min(rms, threshold) * 0.03f;
+                        ambient = ambient * 0.96f + Math.min(smoothedRms, threshold) * 0.04f;
                     }
                 } else {
-                    float endingThreshold = TrackerSettings.endingVolumeRms(context);
-                    if (rms >= endingThreshold) {
+                    float endingThreshold = calculateEndingThreshold(ambient);
+                    if (smoothedRms >= endingThreshold) {
                         signalVoice(now);
                     } else {
                         if (quietSince == 0L) {
                             quietSince = now;
                         }
-                        if (now - quietSince >= TrackerSettings.getReleaseDelayMs(context)) {
+                        long releaseDelayMs = TrackerSettings.getReleaseDelayMs(context);
+                        long quietDuration = now - quietSince;
+                        listener.onEndingCountdown(
+                                smoothedRms,
+                                endingThreshold,
+                                Math.max(0L, releaseDelayMs - quietDuration)
+                        );
+                        if (quietDuration >= releaseDelayMs) {
                             signalSilenceIfNeeded();
                         }
                     }
@@ -184,14 +202,22 @@ public class VoiceTracker {
                 long releaseDelayMs = TrackerSettings.getReleaseDelayMs(context);
                 boolean volumeDropped = quietSince > 0L
                         && now - quietSince >= releaseDelayMs;
+                long stalledReleaseMs = Math.max(
+                        AUDIO_STALL_FORCE_MIN_MS,
+                        releaseDelayMs + 400L
+                );
                 boolean audioReadStalled = lastAudioFrameAt > 0L
-                        && now - lastAudioFrameAt >= releaseDelayMs
+                        && now - lastAudioFrameAt >= AUDIO_STALL_FRAME_GAP_MS
                         && lastVoiceAt > 0L
-                        && now - lastVoiceAt >= STALLED_AUDIO_RELEASE_MS;
-                shouldRelease = speaking && (volumeDropped || audioReadStalled);
+                        && now - lastVoiceAt >= stalledReleaseMs;
+                boolean maximumHoldReached = speechStartedAt > 0L
+                        && now - speechStartedAt >= MAX_SPEECH_HOLD_MS;
+                shouldRelease = speaking
+                        && (volumeDropped || audioReadStalled || maximumHoldReached);
                 if (shouldRelease) {
                     speaking = false;
                     quietSince = 0L;
+                    speechStartedAt = 0L;
                 }
             }
             if (shouldRelease) {
@@ -212,6 +238,7 @@ public class VoiceTracker {
             quietSince = 0L;
             if (!speaking) {
                 speaking = true;
+                speechStartedAt = now;
                 shouldStart = true;
             }
         }
@@ -226,6 +253,7 @@ public class VoiceTracker {
             if (speaking) {
                 speaking = false;
                 quietSince = 0L;
+                speechStartedAt = 0L;
                 shouldRelease = true;
             }
         }
@@ -241,6 +269,14 @@ public class VoiceTracker {
             sum += sample * sample;
         }
         return (float) Math.sqrt(sum / Math.max(1, read));
+    }
+
+    private float calculateEndingThreshold(float ambient) {
+        float configured = TrackerSettings.endingVolumeRms(context);
+        if (!TrackerSettings.isAutomaticEndingEnabled(context)) {
+            return configured;
+        }
+        return Math.max(configured, ambient * AUTOMATIC_ENDING_AMBIENT_MULTIPLIER);
     }
 
     private void releaseRecorder() {

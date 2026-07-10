@@ -18,6 +18,7 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -33,6 +34,7 @@ public class MainActivity extends Activity {
     private TextView sensitivityValueView;
     private TextView endingVolumeValueView;
     private TextView releaseDelayValueView;
+    private Switch automaticEndingSwitch;
     private Button setupButton;
     private Button overlayButton;
     private Button doubaoButton;
@@ -143,9 +145,34 @@ public class MainActivity extends Activity {
 
         root.addView(sectionTitle("说完判定"), withTopMargin(dp(22)));
 
+        automaticEndingSwitch = new Switch(this);
+        automaticEndingSwitch.setText("自动适应环境噪音（推荐）");
+        automaticEndingSwitch.setTextSize(16);
+        automaticEndingSwitch.setTextColor(0xFF111827);
+        automaticEndingSwitch.setChecked(TrackerSettings.isAutomaticEndingEnabled(this));
+        automaticEndingSwitch.setPadding(0, dp(8), 0, dp(4));
+        automaticEndingSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            TrackerSettings.setAutomaticEndingEnabled(MainActivity.this, isChecked);
+            updateEndingVolumeLabel(TrackerSettings.getEndingVolumeTenthsPercent(MainActivity.this));
+            Toast.makeText(
+                    MainActivity.this,
+                    isChecked ? "已开启自动判停" : "已改为手动判停",
+                    Toast.LENGTH_SHORT
+            ).show();
+        });
+        root.addView(automaticEndingSwitch, matchWrap());
+
+        TextView automaticEndingHint = text(
+                "开启后会学习当前环境底噪，并自动抬高实际结束线；下面的结束音量仍作为最低值。",
+                14,
+                0xFF697386
+        );
+        automaticEndingHint.setLineSpacing(dp(3), 1f);
+        root.addView(automaticEndingHint, matchWrap());
+
         endingVolumeValueView = text("", 17, 0xFF111827);
         LinearLayout.LayoutParams endingVolumeParams = matchWrap();
-        endingVolumeParams.setMargins(0, dp(10), 0, 0);
+        endingVolumeParams.setMargins(0, dp(14), 0, 0);
         root.addView(endingVolumeValueView, endingVolumeParams);
 
         SeekBar endingVolumeBar = new SeekBar(this);
@@ -381,8 +408,11 @@ public class MainActivity extends Activity {
         if (endingVolumeValueView == null) {
             return;
         }
+        String prefix = TrackerSettings.isAutomaticEndingEnabled(this)
+                ? "最低结束音量："
+                : "低于多少音量算说完：";
         endingVolumeValueView.setText(
-                "低于多少音量算说完："
+                prefix
                         + String.format(Locale.CHINA, "%.1f%%", tenthsPercent / 10f)
         );
     }

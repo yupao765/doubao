@@ -241,7 +241,6 @@ public class DoubaoAccessibilityService extends AccessibilityService {
 
             @Override
             public void onSilence() {
-                setListeningStatus();
                 releaseHold();
             }
 
@@ -252,6 +251,18 @@ public class DoubaoAccessibilityService extends AccessibilityService {
                 } else {
                     setWaitingForDoubaoStatus();
                 }
+            }
+
+            @Override
+            public void onEndingCountdown(float rms, float endingThreshold, long remainingMs) {
+                if (!isDoubaoForeground()) {
+                    return;
+                }
+                setStatus(
+                        "检测说完中 · 音量 " + formatPercent(rms)
+                                + " < " + formatPercent(endingThreshold)
+                                + " · " + formatSeconds(remainingMs) + "后松手"
+                );
             }
 
             @Override
@@ -414,7 +425,10 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             @Override
             public void onCancelled(GestureDescription gestureDescription) {
                 super.onCancelled(gestureDescription);
-                mainHandler.post(DoubaoAccessibilityService.this::forceReleaseIfStillHeld);
+                mainHandler.post(() -> {
+                    gestureInFlight = false;
+                    forceReleaseIfStillHeld();
+                });
             }
         }, mainHandler);
 
@@ -427,12 +441,20 @@ public class DoubaoAccessibilityService extends AccessibilityService {
 
     private void resetHoldState() {
         mainHandler.removeCallbacks(forceReleaseRunnable);
+        boolean wasHolding = holding;
         holding = false;
         holdWanted = false;
         gestureInFlight = false;
         activeStroke = null;
         if (tracking) {
-            if (isDoubaoForeground()) {
+            if (wasHolding && isDoubaoForeground()) {
+                setStatus("已松开发送");
+                mainHandler.postDelayed(() -> {
+                    if (tracking && !holding && isDoubaoForeground()) {
+                        setListeningStatus();
+                    }
+                }, 450L);
+            } else if (isDoubaoForeground()) {
                 setListeningStatus();
             } else {
                 setWaitingForDoubaoStatus();
@@ -444,6 +466,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         if (!holding || holdWanted) {
             return;
         }
+        gestureInFlight = false;
         Path path = new Path();
         path.moveTo(holdX, holdY);
         GestureDescription gesture = new GestureDescription.Builder()
@@ -726,6 +749,10 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         return String.format(Locale.CHINA, "%.1f%%", percent);
     }
 
+    private String formatSeconds(long milliseconds) {
+        return String.format(Locale.CHINA, "%.1f秒", Math.max(0L, milliseconds) / 1000f);
+    }
+
     private String formatTrackerSettings() {
         return "灵敏度 " + TrackerSettings.getSensitivity(this) + " · " + formatEndingSettings();
     }
@@ -733,7 +760,8 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     private String formatEndingSettings() {
         float endingPercent = TrackerSettings.getEndingVolumeTenthsPercent(this) / 10f;
         float releaseSeconds = TrackerSettings.getReleaseDelayMs(this) / 1000f;
-        return String.format(Locale.CHINA, "结束<%.1f%% 持续%.1f秒", endingPercent, releaseSeconds);
+        String mode = TrackerSettings.isAutomaticEndingEnabled(this) ? "自动结束≥" : "结束<";
+        return String.format(Locale.CHINA, "%s%.1f%% 持续%.1f秒", mode, endingPercent, releaseSeconds);
     }
 
     private ScreenSize getScreenSize() {
