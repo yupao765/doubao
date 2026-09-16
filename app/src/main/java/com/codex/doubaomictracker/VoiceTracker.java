@@ -1,297 +1,97 @@
 package com.codex.doubaomictracker;
 
-import android.content.Context;
+import android.annotation.SuppressLint;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
+import android.media.AudioRecordingConfiguration;
 import android.media.MediaRecorder;
 import android.os.Build;
+import android.os.SystemClock;
+import com.konovalov.vad.webrtc.Vad;
+import com.konovalov.vad.webrtc.VadWebRTC;
+import com.konovalov.vad.webrtc.config.FrameSize;
+import com.konovalov.vad.webrtc.config.Mode;
+import com.konovalov.vad.webrtc.config.SampleRate;
 
-public class VoiceTracker {
+/** Capture only. Conversation and gesture state belongs to the service thread. */
+public final class VoiceTracker {
     public interface Listener {
-        void onVoiceStarted();
-
-        void onSilence();
-
-        void onSuppressedByPlayback();
-
-        void onEndingCountdown(float rms, float endingThreshold, long remainingMs);
-
-        void onVolumeLevel(float rms, float threshold, boolean speaking, boolean suppressed);
-
+        void onFrame(long capturedAt, float rms, boolean speech, boolean silenced);
         void onError(String message);
     }
-
-    public interface Gate {
-        boolean shouldSuppressVoice();
-    }
-
-    private static final int SAMPLE_RATE = 16000;
-    private static final int FRAME_DURATION_MS = 100;
-    private static final float AUTOMATIC_ENDING_AMBIENT_MULTIPLIER = 1.35f;
-    private static final long AUDIO_STALL_FRAME_GAP_MS = 450L;
-    private static final long AUDIO_STALL_FORCE_MIN_MS = 1200L;
-    private static final long MAX_SPEECH_HOLD_MS = 30000L;
-
-    private final Context context;
     private final Listener listener;
-    private final Gate gate;
-    private final Object stateLock = new Object();
     private volatile boolean running;
-    private volatile boolean speaking;
-    private volatile long lastVoiceAt;
-    private volatile long lastAudioFrameAt;
-    private volatile long quietSince;
-    private volatile long speechStartedAt;
+    private volatile AudioRecord recorder;
     private Thread worker;
-    private Thread silenceWatcher;
-    private AudioRecord recorder;
 
-    public VoiceTracker(Context context, Listener listener, Gate gate) {
-        this.context = context.getApplicationContext();
-        this.listener = listener;
-        this.gate = gate;
-    }
-
+    public VoiceTracker(Listener listener) { this.listener = listener; }
     public synchronized void start() {
-        if (running) {
-            return;
-        }
+        if (worker != null) return;
         running = true;
-        speaking = false;
-        lastVoiceAt = 0L;
-        lastAudioFrameAt = 0L;
-        quietSince = 0L;
-        speechStartedAt = 0L;
-        worker = new Thread(this::captureLoop, "DoubaoVoiceTracker");
-        silenceWatcher = new Thread(this::watchSilenceTimeout, "DoubaoSilenceWatcher");
+        worker = new Thread(this::capture, "DoubaoAudioCapture");
         worker.start();
-        silenceWatcher.start();
     }
-
-    public synchronized void stop() {
+    public void stop() {
         running = false;
-        AudioRecord local = recorder;
-        if (local != null) {
-            try {
-                local.stop();
-            } catch (IllegalStateException ignored) {
-            }
+        AudioRecord current = recorder;
+        if (current != null) {
+            try { current.stop(); } catch (IllegalStateException ignored) { }
         }
-        if (silenceWatcher != null) {
-            silenceWatcher.interrupt();
-        }
-        signalSilenceIfNeeded();
     }
-
-    private void captureLoop() {
+    @SuppressLint("MissingPermission") // Service checks permission; revocation is reported as an error.
+    private void capture() {
+        AudioRecord local = null;
+        VadWebRTC vad = null;
         try {
-            int minBufferBytes = AudioRecord.getMinBufferSize(
-                    SAMPLE_RATE,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT
-            );
-            if (minBufferBytes <= 0) {
-                notifyError("当前设备不支持 16kHz 单声道麦克风采样");
-                return;
-            }
-
-            int bufferBytes = Math.max(
-                    minBufferBytes,
-                    SAMPLE_RATE * FRAME_DURATION_MS / 1000 * 2
-            );
-            short[] buffer = new short[bufferBytes / 2];
-
+            int minimum = AudioRecord.getMinBufferSize(16000,
+                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+            if (minimum <= 0) throw new IllegalStateException("不支持16kHz录音");
             AudioRecord.Builder builder = new AudioRecord.Builder()
                     .setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
-                    .setAudioFormat(new AudioFormat.Builder()
-                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                            .setSampleRate(SAMPLE_RATE)
+                    .setAudioFormat(new AudioFormat.Builder().setSampleRate(16000)
                             .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-                            .build())
-                    .setBufferSizeInBytes(bufferBytes);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                builder.setPrivacySensitive(false);
-            }
-            recorder = builder.build();
-
-            if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
-                notifyError("麦克风初始化失败");
-                return;
-            }
-
-            recorder.startRecording();
-
-            float ambient = 0.0025f;
-            float smoothedRms = 0f;
-            long lastSuppressedNoticeAt = 0L;
-
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
+                    .setBufferSizeInBytes(Math.max(minimum, 640 * 8));
+            if (Build.VERSION.SDK_INT >= 30) builder.setPrivacySensitive(false);
+            local = builder.build();
+            recorder = local;
+            if (!running) return;
+            if (local.getState() != AudioRecord.STATE_INITIALIZED)
+                throw new IllegalStateException("麦克风初始化失败");
+            vad = Vad.builder().setSampleRate(SampleRate.SAMPLE_RATE_16K)
+                    .setFrameSize(FrameSize.FRAME_SIZE_320).setMode(Mode.AGGRESSIVE)
+                    .setSpeechDurationMs(0).setSilenceDurationMs(0).build();
+            local.startRecording();
+            short[] frame = new short[320];
+            int offset = 0;
             while (running) {
-                int read = recorder.read(buffer, 0, buffer.length, AudioRecord.READ_BLOCKING);
-                if (read <= 0) {
-                    continue;
+                int read = local.read(frame, offset, frame.length - offset, AudioRecord.READ_BLOCKING);
+                if (!running) break;
+                if (read < 0) throw new IllegalStateException("录音读取失败，代码 " + read);
+                if (read == 0) { Thread.sleep(10); continue; }
+                offset += read;
+                if (offset != frame.length) continue;
+                offset = 0;
+                boolean silenced = false;
+                if (Build.VERSION.SDK_INT >= 29) {
+                    AudioRecordingConfiguration config = local.getActiveRecordingConfiguration();
+                    silenced = config != null && config.isClientSilenced();
                 }
-
-                float rms = calculateRms(buffer, read);
-                smoothedRms = smoothedRms == 0f
-                        ? rms
-                        : smoothedRms * 0.55f + rms * 0.45f;
-                float threshold = Math.max(
-                        TrackerSettings.minimumSpeechRms(context),
-                        ambient * TrackerSettings.ambientMultiplier(context)
-                );
-                long now = System.currentTimeMillis();
-                lastAudioFrameAt = now;
-                boolean suppressed = gate != null && gate.shouldSuppressVoice();
-
-                if (suppressed) {
-                    signalSilenceIfNeeded();
-                    listener.onVolumeLevel(rms, threshold, false, true);
-                    if (now - lastSuppressedNoticeAt > 900L) {
-                        listener.onSuppressedByPlayback();
-                        lastSuppressedNoticeAt = now;
-                    }
-                    continue;
+                double energy = 0;
+                for (short value : frame) {
+                    double normalized = value / 32768.0;
+                    energy += normalized * normalized;
                 }
-
-                if (!speaking) {
-                    if (smoothedRms > threshold) {
-                        signalVoice(now);
-                    } else {
-                        ambient = ambient * 0.96f + Math.min(smoothedRms, threshold) * 0.04f;
-                    }
-                } else {
-                    float endingThreshold = calculateEndingThreshold(ambient);
-                    if (smoothedRms >= endingThreshold) {
-                        signalVoice(now);
-                    } else {
-                        if (quietSince == 0L) {
-                            quietSince = now;
-                        }
-                        long releaseDelayMs = TrackerSettings.getReleaseDelayMs(context);
-                        long quietDuration = now - quietSince;
-                        listener.onEndingCountdown(
-                                smoothedRms,
-                                endingThreshold,
-                                Math.max(0L, releaseDelayMs - quietDuration)
-                        );
-                        if (quietDuration >= releaseDelayMs) {
-                            signalSilenceIfNeeded();
-                        }
-                    }
-                }
-
-                listener.onVolumeLevel(rms, threshold, speaking, false);
+                listener.onFrame(SystemClock.elapsedRealtime(),
+                        (float) Math.sqrt(energy / frame.length), vad.isSpeech(frame), silenced);
             }
-        } catch (SecurityException e) {
-            notifyError("没有麦克风权限");
-        } catch (Exception e) {
-            if (running) {
-                notifyError("麦克风监听异常：" + e.getMessage());
-            }
+        } catch (Exception | LinkageError e) {
+            if (running) listener.onError("录音不可用：" + e.getMessage());
         } finally {
-            signalSilenceIfNeeded();
-            releaseRecorder();
+            running = false;
+            recorder = null;
+            if (local != null) local.release();
+            if (vad != null) vad.close();
         }
-    }
-
-    private void watchSilenceTimeout() {
-        while (running) {
-            boolean shouldRelease;
-            synchronized (stateLock) {
-                long now = System.currentTimeMillis();
-                long releaseDelayMs = TrackerSettings.getReleaseDelayMs(context);
-                boolean volumeDropped = quietSince > 0L
-                        && now - quietSince >= releaseDelayMs;
-                long stalledReleaseMs = Math.max(
-                        AUDIO_STALL_FORCE_MIN_MS,
-                        releaseDelayMs + 400L
-                );
-                boolean audioReadStalled = lastAudioFrameAt > 0L
-                        && now - lastAudioFrameAt >= AUDIO_STALL_FRAME_GAP_MS
-                        && lastVoiceAt > 0L
-                        && now - lastVoiceAt >= stalledReleaseMs;
-                boolean maximumHoldReached = speechStartedAt > 0L
-                        && now - speechStartedAt >= MAX_SPEECH_HOLD_MS;
-                shouldRelease = speaking
-                        && (volumeDropped || audioReadStalled || maximumHoldReached);
-                if (shouldRelease) {
-                    speaking = false;
-                    quietSince = 0L;
-                    speechStartedAt = 0L;
-                }
-            }
-            if (shouldRelease) {
-                listener.onSilence();
-            }
-            try {
-                Thread.sleep(80L);
-            } catch (InterruptedException ignored) {
-                return;
-            }
-        }
-    }
-
-    private void signalVoice(long now) {
-        boolean shouldStart = false;
-        synchronized (stateLock) {
-            lastVoiceAt = now;
-            quietSince = 0L;
-            if (!speaking) {
-                speaking = true;
-                speechStartedAt = now;
-                shouldStart = true;
-            }
-        }
-        if (shouldStart) {
-            listener.onVoiceStarted();
-        }
-    }
-
-    private void signalSilenceIfNeeded() {
-        boolean shouldRelease = false;
-        synchronized (stateLock) {
-            if (speaking) {
-                speaking = false;
-                quietSince = 0L;
-                speechStartedAt = 0L;
-                shouldRelease = true;
-            }
-        }
-        if (shouldRelease) {
-            listener.onSilence();
-        }
-    }
-
-    private float calculateRms(short[] buffer, int read) {
-        double sum = 0.0;
-        for (int i = 0; i < read; i++) {
-            double sample = buffer[i] / 32768.0;
-            sum += sample * sample;
-        }
-        return (float) Math.sqrt(sum / Math.max(1, read));
-    }
-
-    private float calculateEndingThreshold(float ambient) {
-        float configured = TrackerSettings.endingVolumeRms(context);
-        if (!TrackerSettings.isAutomaticEndingEnabled(context)) {
-            return configured;
-        }
-        return Math.max(configured, ambient * AUTOMATIC_ENDING_AMBIENT_MULTIPLIER);
-    }
-
-    private void releaseRecorder() {
-        AudioRecord local = recorder;
-        recorder = null;
-        if (local != null) {
-            try {
-                local.release();
-            } catch (Exception ignored) {
-            }
-        }
-    }
-
-    private void notifyError(String message) {
-        running = false;
-        listener.onError(message);
     }
 }

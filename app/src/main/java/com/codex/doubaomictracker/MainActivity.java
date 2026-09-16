@@ -25,9 +25,12 @@ import android.widget.Toast;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 1001;
+    private static final int EXPORT_DIAGNOSTICS = 1002;
     private static final String DOUBAO_PACKAGE = "com.larus.nova";
 
     private TextView permissionStatusView;
@@ -86,7 +89,7 @@ public class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title, matchWrap());
 
-        TextView subtitle = text("只需首次授权。以后打开豆包，就能直接使用悬浮控制。", 15, 0xFF596273);
+        TextView subtitle = text("3.0.0", 15, 0xFF596273);
         subtitle.setGravity(Gravity.CENTER_HORIZONTAL);
         subtitle.setLineSpacing(dp(3), 1f);
         LinearLayout.LayoutParams subtitleParams = matchWrap();
@@ -141,12 +144,11 @@ public class MainActivity extends Activity {
 
         TextView sensitivityHint = text("数值越高，较小的声音也会触发；如果容易误触发，就向左调低。默认 6 级。", 14, 0xFF697386);
         sensitivityHint.setLineSpacing(dp(3), 1f);
-        root.addView(sensitivityHint, matchWrap());
 
         root.addView(sectionTitle("说完判定"), withTopMargin(dp(22)));
 
         automaticEndingSwitch = new Switch(this);
-        automaticEndingSwitch.setText("自动适应环境噪音（推荐）");
+        automaticEndingSwitch.setText("自动适应环境噪音");
         automaticEndingSwitch.setTextSize(16);
         automaticEndingSwitch.setTextColor(0xFF111827);
         automaticEndingSwitch.setChecked(TrackerSettings.isAutomaticEndingEnabled(this));
@@ -168,7 +170,6 @@ public class MainActivity extends Activity {
                 0xFF697386
         );
         automaticEndingHint.setLineSpacing(dp(3), 1f);
-        root.addView(automaticEndingHint, matchWrap());
 
         endingVolumeValueView = text("", 17, 0xFF111827);
         LinearLayout.LayoutParams endingVolumeParams = matchWrap();
@@ -210,7 +211,6 @@ public class MainActivity extends Activity {
                 0xFF697386
         );
         endingVolumeHint.setLineSpacing(dp(3), 1f);
-        root.addView(endingVolumeHint, matchWrap());
 
         releaseDelayValueView = text("", 17, 0xFF111827);
         LinearLayout.LayoutParams releaseDelayParams = matchWrap();
@@ -253,18 +253,24 @@ public class MainActivity extends Activity {
                 0xFF697386
         );
         releaseDelayHint.setLineSpacing(dp(3), 1f);
-        root.addView(releaseDelayHint, matchWrap());
 
         root.addView(sectionTitle("开始使用"), withTopMargin(dp(22)));
 
         doubaoButton = actionButton("打开豆包", true, v -> openDoubao());
         root.addView(doubaoButton);
 
+        root.addView(actionButton("导出诊断记录", false, v -> {
+            Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            intent.setType("text/plain");
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.putExtra(Intent.EXTRA_TITLE, "doubao-diagnostics.txt");
+            startActivityForResult(intent, EXPORT_DIAGNOSTICS);
+        }));
+
         TextView note = text("说明：Android 不允许应用替你自动打开无障碍权限，所以第一次仍需在系统页面手动确认。固定签名版安装后，后续更新和普通重启都会保留该授权。", 13, 0xFF747E8F);
         note.setLineSpacing(dp(3), 1f);
         LinearLayout.LayoutParams noteParams = matchWrap();
         noteParams.setMargins(0, dp(10), 0, 0);
-        root.addView(note, noteParams);
 
         updateSensitivityLabel(TrackerSettings.getSensitivity(this));
         updateEndingVolumeLabel(TrackerSettings.getEndingVolumeTenthsPercent(this));
@@ -284,6 +290,20 @@ public class MainActivity extends Activity {
             return;
         }
         showFloatingControls();
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != EXPORT_DIAGNOSTICS || resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        DoubaoAccessibilityService service = DoubaoAccessibilityService.getInstance();
+        String log = service == null ? "服务尚未连接，无诊断记录" : service.getDiagnostics();
+        try (OutputStream output = getContentResolver().openOutputStream(data.getData())) {
+            if (output == null) throw new java.io.IOException("无法打开文件");
+            output.write(log.getBytes(StandardCharsets.UTF_8));
+            Toast.makeText(this, "诊断记录已导出", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "导出失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     private void requestRequiredPermissions() {
@@ -408,9 +428,7 @@ public class MainActivity extends Activity {
         if (endingVolumeValueView == null) {
             return;
         }
-        String prefix = TrackerSettings.isAutomaticEndingEnabled(this)
-                ? "最低结束音量："
-                : "低于多少音量算说完：";
+        String prefix = "结束音量设置：";
         endingVolumeValueView.setText(
                 prefix
                         + String.format(Locale.CHINA, "%.1f%%", tenthsPercent / 10f)

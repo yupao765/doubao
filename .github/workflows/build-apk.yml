@@ -39,13 +39,22 @@ jobs:
           test -n "$KEYSTORE_BASE64"
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/doubao-release.p12"
 
-      - name: Build stable APK
+      - name: Test and build stable APK
         env:
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/doubao-release.p12
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradle-8.7/bin/gradle assembleRelease --no-daemon
+        run: ./gradle-8.7/bin/gradle testDebugUnitTest lintRelease assembleRelease --no-daemon
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-reports
+          path: |
+            app/build/reports/tests/
+            app/build/reports/lint-results-release.*
 
       - name: Verify APK signature
         run: |

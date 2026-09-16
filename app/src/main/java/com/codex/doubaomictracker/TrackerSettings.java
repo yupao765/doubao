@@ -80,7 +80,7 @@ public final class TrackerSettings {
 
     public static float minimumSpeechRms(Context context) {
         int level = getSensitivity(context);
-        return 0.0045f + (MAX_SENSITIVITY - level) * 0.0011f;
+        return 0.0012f + (MAX_SENSITIVITY - level) * 0.00055f;
     }
 
     public static float ambientMultiplier(Context context) {
