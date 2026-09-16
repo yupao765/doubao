@@ -115,4 +115,14 @@ public class HoldControllerTest {
         controller.update(250, true, true, true, true);
         assertEquals(2, commands.size());
     }
+    @Test public void missingReleaseCallbackDoesNotContinueAlreadyEndedStroke() {
+        start();
+        controller.update(30, false, true, true, false);
+        controller.result(last().token, true, 100);
+        controller.update(900, false, true, true, false);
+        assertEquals(2, commands.size());
+        assertEquals(HoldController.State.VERIFYING, controller.state);
+        controller.update(920, false, true, true, true);
+        assertEquals(HoldController.State.IDLE, controller.state);
+    }
 }

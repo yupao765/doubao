@@ -37,7 +37,12 @@ final class HoldController {
         }
         if (inFlight != 0 && now >= deadline) {
             inFlight = 0;
-            if (!recoveryAttempted) {
+            if (finishing && !recoveryAttempted) {
+                // An ending stroke cannot be continued again; inspect its actual outcome.
+                state = State.VERIFYING;
+                deadline = now + 1500;
+                driver.changed("松手回调超时，检查录音界面");
+            } else if (!recoveryAttempted) {
                 recoveryAttempted = true;
                 state = State.RELEASING;
                 driver.changed("手势超时，结束原按压");

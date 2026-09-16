@@ -72,8 +72,9 @@ final class DoubaoWindowInspector {
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         if (node.isVisibleToUser() && !bounds.isEmpty()) {
-            if ((value.contains("松手发送") || value.contains("松开发送")
-                    || value.contains("上移取消")) && bounds.centerY() > window.centerY()) recording = true;
+            if (value.length() <= 32 && (value.contains("松手发送") || value.contains("松开发送")
+                    || value.contains("上移取消"))
+                    && bounds.centerY() > window.top + window.height() * 0.7f) recording = true;
             if (node.isClickable() && (playbackLabel(text(node.getText()))
                     || playbackLabel(text(node.getContentDescription())))) playing = true;
             if (node.isEnabled() && (value.equals("按住说话") || value.equals("按住说话按住说话"))
