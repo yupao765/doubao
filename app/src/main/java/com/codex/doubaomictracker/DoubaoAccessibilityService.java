@@ -192,7 +192,11 @@ public class DoubaoAccessibilityService extends AccessibilityService {
                     .setContentTitle("豆包语音跟随").setContentText("麦克风跟踪已开启")
                     .setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentIntent(action)
                     .setOngoing(true).build();
-            startForeground(2301, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+            if (Build.VERSION.SDK_INT >= 30) {
+                startForeground(2301, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+            } else {
+                startForeground(2301, notification);
+            }
         } catch (RuntimeException e) {
             message = "麦克风启动受限，请回本应用后重试"; log(e.toString()); render(); return;
         }
