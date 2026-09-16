@@ -142,9 +142,6 @@ public class MainActivity extends Activity {
         });
         root.addView(sensitivityBar, matchWrap());
 
-        TextView sensitivityHint = text("数值越高，较小的声音也会触发；如果容易误触发，就向左调低。默认 6 级。", 14, 0xFF697386);
-        sensitivityHint.setLineSpacing(dp(3), 1f);
-
         root.addView(sectionTitle("说完判定"), withTopMargin(dp(22)));
 
         automaticEndingSwitch = new Switch(this);
@@ -163,13 +160,6 @@ public class MainActivity extends Activity {
             ).show();
         });
         root.addView(automaticEndingSwitch, matchWrap());
-
-        TextView automaticEndingHint = text(
-                "开启后会学习当前环境底噪，并自动抬高实际结束线；下面的结束音量仍作为最低值。",
-                14,
-                0xFF697386
-        );
-        automaticEndingHint.setLineSpacing(dp(3), 1f);
 
         endingVolumeValueView = text("", 17, 0xFF111827);
         LinearLayout.LayoutParams endingVolumeParams = matchWrap();
@@ -204,13 +194,6 @@ public class MainActivity extends Activity {
             }
         });
         root.addView(endingVolumeBar, matchWrap());
-
-        TextView endingVolumeHint = text(
-                "音量低于这个数值时开始计时。环境越吵可适当调高；如果尾音容易被截断就调低。",
-                14,
-                0xFF697386
-        );
-        endingVolumeHint.setLineSpacing(dp(3), 1f);
 
         releaseDelayValueView = text("", 17, 0xFF111827);
         LinearLayout.LayoutParams releaseDelayParams = matchWrap();
@@ -247,13 +230,6 @@ public class MainActivity extends Activity {
         });
         root.addView(releaseDelayBar, matchWrap());
 
-        TextView releaseDelayHint = text(
-                "低音量连续达到这个时间后松开发送。时间越短反应越快，时间越长越不容易截断停顿。",
-                14,
-                0xFF697386
-        );
-        releaseDelayHint.setLineSpacing(dp(3), 1f);
-
         root.addView(sectionTitle("开始使用"), withTopMargin(dp(22)));
 
         doubaoButton = actionButton("打开豆包", true, v -> openDoubao());
@@ -266,11 +242,6 @@ public class MainActivity extends Activity {
             intent.putExtra(Intent.EXTRA_TITLE, "doubao-diagnostics.txt");
             startActivityForResult(intent, EXPORT_DIAGNOSTICS);
         }));
-
-        TextView note = text("说明：Android 不允许应用替你自动打开无障碍权限，所以第一次仍需在系统页面手动确认。固定签名版安装后，后续更新和普通重启都会保留该授权。", 13, 0xFF747E8F);
-        note.setLineSpacing(dp(3), 1f);
-        LinearLayout.LayoutParams noteParams = matchWrap();
-        noteParams.setMargins(0, dp(10), 0, 0);
 
         updateSensitivityLabel(TrackerSettings.getSensitivity(this));
         updateEndingVolumeLabel(TrackerSettings.getEndingVolumeTenthsPercent(this));
