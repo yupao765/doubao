@@ -29,6 +29,7 @@ import android.view.accessibility.AccessibilityEvent;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.util.ArrayDeque;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -89,7 +90,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     public static boolean isRunning() { return instance != null; }
     public static DoubaoAccessibilityService getInstance() { return instance; }
     public String getDiagnostics() {
-        return "DoubaoVoiceFollower 3.2.1\nAndroid " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT
+        return "DoubaoVoiceFollower 3.2.2\nAndroid " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT
                 + " " + Build.MANUFACTURER + " " + Build.MODEL + "\nBuild " + Build.DISPLAY
                 + "\n" + (echoStatus == null ? "aec=not started" : echoStatus.diagnostic())
                 + "\nreference=" + PlaybackReferenceService.status()
@@ -160,6 +161,12 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         closeLayout.leftMargin = dp(4);
         header.addView(closeButton, closeLayout);
         column.addView(header);
+        Button openDoubaoButton = button("打开豆包", 0xFF176BFF);
+        openDoubaoButton.setTextSize(14);
+        openDoubaoButton.setOnClickListener(v -> openDoubaoFromOverlay());
+        LinearLayout.LayoutParams launchLayout = new LinearLayout.LayoutParams(-1, dp(42));
+        launchLayout.bottomMargin = dp(6);
+        column.addView(openDoubaoButton, launchLayout);
         LinearLayout row = new LinearLayout(this);
         startButton = button("启用麦克风跟踪", 0xFF176BFF);
         stopButton = button("结束跟踪", 0xFF454B54);
@@ -201,6 +208,20 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         overlay = column;
         windowManager.addView(overlay, overlayParams);
         render();
+    }
+
+    private void openDoubaoFromOverlay() {
+        Intent launch = getPackageManager().getLaunchIntentForPackage(DoubaoWindowInspector.PACKAGE);
+        if (launch == null) {
+            Toast.makeText(this, "没有找到豆包应用", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(launch);
+        } catch (RuntimeException e) {
+            Toast.makeText(this, "暂时无法打开豆包", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void closeOverlay() {
