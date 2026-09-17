@@ -12,7 +12,6 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.graphics.Color;
-import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
@@ -45,7 +44,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     private DoubaoWindowInspector.Snapshot screen = DoubaoWindowInspector.Snapshot.unknown();
     private VoiceTracker audio;
     private HoldController hold;
-    private GestureDescription.StrokeDescription stroke;
+    private PressGesture pressGesture;
     private WindowManager windowManager;
     private WindowManager.LayoutParams overlayParams;
     private View overlay;
@@ -79,7 +78,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     public static boolean isRunning() { return instance != null; }
     public static DoubaoAccessibilityService getInstance() { return instance; }
     public String getDiagnostics() {
-        return "DoubaoVoiceFollower 3.0.0\nAndroid " + Build.VERSION.RELEASE + " "
+        return "DoubaoVoiceFollower 3.0.1\nAndroid " + Build.VERSION.RELEASE + " "
                 + Build.MANUFACTURER + " " + Build.MODEL + "\n" + String.join("\n", diagnostics);
     }
 
@@ -270,7 +269,6 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             uiEnded = true;
         hold.update(time, tracking && detector.speaking && !playing(), targetReady && !playing(),
                 tracking && continueAllowed && !playing(), uiEnded);
-        if (screen.recording && hold.state == HoldController.State.HOLDING) hold.confirmRecording();
         if (hold.state == HoldController.State.HOLDING && time - gestureStarted > 1600
                 && foreground && screen.target != null && !screen.recording) {
             stopTracking("按压未进入录音，请检查豆包界面"); return;
@@ -350,19 +348,25 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             holdY = screen.target.centerY();
             gestureStarted = now();
         }
-        Path path = new Path();
-        path.moveTo(holdX, holdY);
         try {
-            GestureDescription.StrokeDescription next = first
-                    ? new GestureDescription.StrokeDescription(path, 0, 100, true)
-                    : stroke.continueStroke(path, 0, finish ? 1 : 100, !finish);
-            GestureDescription gesture = new GestureDescription.Builder().addStroke(next).build();
+            if (first == finish) throw new IllegalArgumentException("Only press or release is allowed");
+            if (first) pressGesture = new PressGesture();
+            GestureDescription gesture = first ? pressGesture.press(holdX, holdY) : pressGesture.release();
+            log("gesture request token=" + token + " action=" + (first ? "DOWN" : "UP"));
             boolean accepted = dispatchGesture(gesture, new GestureResultCallback() {
-                @Override public void onCompleted(GestureDescription description) { hold.result(token, true, now()); }
-                @Override public void onCancelled(GestureDescription description) { hold.result(token, false, now()); }
+                @Override public void onCompleted(GestureDescription description) {
+                    log("gesture completed token=" + token);
+                    hold.result(token, true, now());
+                }
+                @Override public void onCancelled(GestureDescription description) {
+                    log("gesture cancelled token=" + token);
+                    hold.result(token, false, now());
+                }
             }, main);
-            if (accepted) stroke = next;
-            else hold.rejected(token, now(), first);
+            if (!accepted) {
+                log("gesture rejected token=" + token);
+                hold.rejected(token, now(), first);
+            }
         } catch (RuntimeException e) {
             log("手势异常 " + e.getClass().getSimpleName());
             hold.rejected(token, now(), first);

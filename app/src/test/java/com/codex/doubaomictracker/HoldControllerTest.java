@@ -19,14 +19,14 @@ public class HoldControllerTest {
     private Command last() { return commands.get(commands.size() - 1); }
     private void start() { controller.update(0, true, true, true, false); }
 
-    @Test public void rejectedPressRetriesWhileVoiceRemainsActive() {
+    @Test public void rejectedPressDoesNotRapidlyRetrigger() {
         start();
         controller.rejected(last().token, 10, true);
         controller.update(500, true, true, true, false);
         assertEquals(1, commands.size());
         controller.update(610, true, true, true, false);
-        assertEquals(2, commands.size());
-        assertTrue(last().first);
+        assertEquals(1, commands.size());
+        assertEquals(HoldController.State.FAILED, controller.state);
     }
     @Test public void speechEndClosesOriginalStroke() {
         start();
@@ -98,22 +98,26 @@ public class HoldControllerTest {
         controller.result(last().token, true, 100);
         assertTrue(last().finish);
     }
-    @Test public void threeRejectedStartsProduceVisibleFailure() {
+    @Test public void repeatedVoiceAfterRejectionDoesNotSendNewGestures() {
         for (int i = 0; i < 3; i++) {
             controller.update(i * 1000, true, true, true, false);
             controller.rejected(last().token, i * 1000 + 1, true);
         }
         assertEquals(HoldController.State.FAILED, controller.state);
+        assertEquals(1, commands.size());
     }
-    @Test public void cancelledGestureMustBeVerifiedBeforeRetry() {
+    @Test public void cancelledPressIsClosedBeforePausingWithoutRetry() {
         start();
         controller.result(last().token, false, 100);
         controller.update(120, true, true, true, false);
-        assertEquals(1, commands.size());
+        assertEquals(2, commands.size());
+        assertTrue(last().finish);
+        controller.result(last().token, true, 130);
         assertEquals(HoldController.State.VERIFYING, controller.state);
         controller.update(150, true, true, true, true);
         controller.update(250, true, true, true, true);
         assertEquals(2, commands.size());
+        assertEquals(HoldController.State.FAILED, controller.state);
     }
     @Test public void missingReleaseCallbackDoesNotContinueAlreadyEndedStroke() {
         start();
@@ -124,5 +128,24 @@ public class HoldControllerTest {
         assertEquals(HoldController.State.VERIFYING, controller.state);
         controller.update(920, false, true, true, true);
         assertEquals(HoldController.State.IDLE, controller.state);
+    }
+    @Test public void stationaryHoldDoesNotIssueEventlessKeepalives() {
+        start();
+        controller.result(last().token, true, 1);
+        for (int time = 20; time <= 10000; time += 20)
+            controller.update(time, true, true, true, false);
+        assertEquals(1, commands.size());
+        assertEquals(HoldController.State.HOLDING, controller.state);
+        controller.update(10020, false, true, true, false);
+        assertEquals(2, commands.size());
+        assertTrue(last().finish);
+        assertFalse(last().first);
+    }
+    @Test public void stationaryHoldMaximumTimeStillReleases() {
+        start();
+        controller.result(last().token, true, 1);
+        controller.update(30000, true, true, true, false);
+        assertEquals(2, commands.size());
+        assertTrue(last().finish);
     }
 }

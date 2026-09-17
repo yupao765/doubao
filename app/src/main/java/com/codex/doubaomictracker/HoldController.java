@@ -16,7 +16,7 @@ final class HoldController {
     private long heldAt;
     private boolean finishing;
     private boolean recoveryAttempted;
-    private int failures;
+    private boolean pauseAfterRelease;
     private long retryAt;
 
     HoldController(Driver driver) { this.driver = driver; }
@@ -30,9 +30,12 @@ final class HoldController {
         }
         if (state == State.VERIFYING) {
             if (uiReady) {
-                state = State.IDLE;
-                retryAt = now + 100;
-                driver.changed("录音界面已结束");
+                if (pauseAfterRelease) fail("手势被中断，已结束并暂停");
+                else {
+                    state = State.IDLE;
+                    retryAt = now + 100;
+                    driver.changed("录音界面已结束");
+                }
             } else if (now >= deadline) fail("无法确认松手，请手动结束豆包录音");
         }
         if (inFlight != 0 && now >= deadline) {
@@ -44,6 +47,7 @@ final class HoldController {
                 driver.changed("松手回调超时，检查录音界面");
             } else if (!recoveryAttempted) {
                 recoveryAttempted = true;
+                pauseAfterRelease = true;
                 state = State.RELEASING;
                 driver.changed("手势超时，结束原按压");
                 send(now, false, true);
@@ -53,6 +57,7 @@ final class HoldController {
             state = State.HOLDING;
             heldAt = now;
             recoveryAttempted = false;
+            pauseAfterRelease = false;
             driver.changed("开始按压");
             send(now, true, false);
         }
@@ -61,31 +66,38 @@ final class HoldController {
         if (token != inFlight || inFlight == 0 || state == State.FAILED) return;
         inFlight = 0;
         if (!success) {
-            if (++failures >= 3) { fail("手势连续失败，请检查无障碍服务"); return; }
-            state = State.VERIFYING;
-            deadline = now + 1500;
-            driver.changed("手势未完成，检查录音状态");
+            pauseAfterRelease = true;
+            if (!finishing) {
+                // A failed callback does not prove the pointer was lifted on every device.
+                state = State.RELEASING;
+                driver.changed("按压中断，尝试结束原按压");
+                send(now, false, true);
+            } else {
+                state = State.VERIFYING;
+                deadline = now + 1500;
+                driver.changed("松手未确认，检查录音状态");
+            }
         } else if (finishing) {
             state = State.VERIFYING;
             deadline = now + 1500;
             driver.changed("松手指令完成，确认界面");
-        } else {
+        } else if (state == State.RELEASING || !wanted) {
             send(now, false, state == State.RELEASING || !wanted);
         }
+        // A completed opening stroke with willContinue=true keeps the pointer DOWN.
+        // Do not dispatch stationary keepalives: Android rejects eventless continuations.
     }
     void rejected(long token, long now, boolean first) {
         if (token != inFlight) return;
         if (first) {
             inFlight = 0;
-            if (++failures >= 3) fail("系统拒绝按压，请检查无障碍服务");
-            else { state = State.IDLE; retryAt = now + 600; driver.changed("按压失败，等待重试"); }
+            fail("系统未接受按压，已暂停");
         } else result(token, false, now);
     }
-    void confirmRecording() { failures = 0; }
     void reset() {
         ++serial;
         inFlight = 0;
-        failures = 0;
+        pauseAfterRelease = false;
         state = State.IDLE;
         wanted = false;
         retryAt = 0;
