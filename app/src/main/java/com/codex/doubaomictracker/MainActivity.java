@@ -113,7 +113,7 @@ public class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title, matchWrap());
 
-        TextView subtitle = text("3.2.0 · 参考音频打断实验版", 15, 0xFF596273);
+        TextView subtitle = text("3.2.1 · 参考音频打断实验版", 15, 0xFF596273);
         subtitle.setGravity(Gravity.CENTER_HORIZONTAL);
         subtitle.setLineSpacing(dp(3), 1f);
         LinearLayout.LayoutParams subtitleParams = matchWrap();

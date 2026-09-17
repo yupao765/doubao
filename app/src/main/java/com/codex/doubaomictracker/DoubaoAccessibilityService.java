@@ -60,6 +60,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     private TextView status;
     private Button startButton;
     private Button stopButton;
+    private Button closeButton;
     private boolean tracking;
     private boolean destroyed;
     private boolean scanning;
@@ -88,7 +89,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     public static boolean isRunning() { return instance != null; }
     public static DoubaoAccessibilityService getInstance() { return instance; }
     public String getDiagnostics() {
-        return "DoubaoVoiceFollower 3.2.0\nAndroid " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT
+        return "DoubaoVoiceFollower 3.2.1\nAndroid " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT
                 + " " + Build.MANUFACTURER + " " + Build.MODEL + "\nBuild " + Build.DISPLAY
                 + "\n" + (echoStatus == null ? "aec=not started" : echoStatus.diagnostic())
                 + "\nreference=" + PlaybackReferenceService.status()
@@ -146,8 +147,19 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         status.setTextSize(12);
         status.setGravity(Gravity.CENTER);
         status.setMaxLines(3);
-        column.addView(status, new LinearLayout.LayoutParams(-1,
-                Math.max(dp(54), status.getLineHeight() * 3 + dp(8))));
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(status, new LinearLayout.LayoutParams(0,
+                Math.max(dp(54), status.getLineHeight() * 3 + dp(8)), 1));
+        closeButton = button("×", 0xFF454B54);
+        closeButton.setTextSize(24);
+        closeButton.setContentDescription("关闭悬浮窗");
+        closeButton.setPadding(0, 0, 0, 0);
+        closeButton.setOnClickListener(v -> closeOverlay());
+        LinearLayout.LayoutParams closeLayout = new LinearLayout.LayoutParams(dp(40), dp(44));
+        closeLayout.leftMargin = dp(4);
+        header.addView(closeButton, closeLayout);
+        column.addView(header);
         LinearLayout row = new LinearLayout(this);
         startButton = button("启用麦克风跟踪", 0xFF176BFF);
         stopButton = button("结束跟踪", 0xFF454B54);
@@ -189,6 +201,17 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         overlay = column;
         windowManager.addView(overlay, overlayParams);
         render();
+    }
+
+    private void closeOverlay() {
+        stopTracking("悬浮窗已关闭");
+        if (overlay == null) return;
+        windowManager.removeView(overlay);
+        overlay = null;
+        status = null;
+        startButton = null;
+        stopButton = null;
+        closeButton = null;
     }
 
     private void startTracking() {

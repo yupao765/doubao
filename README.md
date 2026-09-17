@@ -1,10 +1,14 @@
-# 豆包语音跟随 3.2.0 参考音频打断实验版
+# 豆包语音跟随 3.2.1 参考音频打断实验版
 
 Android 10 及以上的本地语音辅助工具。在豆包前台的“按住说话”界面检测人声，通过无障碍连续手势按压，停顿后结束同一条按压。
 
 ## 下载
 
-在仓库右侧 **Releases** 下载 `DoubaoVoiceFollower-v3.2.0-reference-aec.apk`。GitHub Actions 的 `DoubaoVoiceFollower-stable-apk` 也包含相同构建产物，保留原稳定签名，可覆盖安装。
+在仓库右侧 **Releases** 下载 `DoubaoVoiceFollower-v3.2.1-reference-aec.apk`。GitHub Actions 的 `DoubaoVoiceFollower-stable-apk` 也包含相同构建产物，保留原稳定签名，可覆盖安装。
+
+## 3.2.1 悬浮窗关闭
+
+悬浮控制右上角的“×”会停止跟踪并关闭悬浮窗。之后可从应用主界面的“显示悬浮控制”重新打开。
 
 ## 3.2.0 用户开口打断豆包
 
