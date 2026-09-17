@@ -43,6 +43,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     private SpeechDetector detector = new SpeechDetector();
     private PlaybackGate playbackGate = new PlaybackGate();
     private EchoStatus echoStatus;
+    private ReferenceStatus referenceStatus;
     private boolean observationOnly;
     private boolean allowInterruption;
     private boolean playbackActive;
@@ -87,9 +88,10 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     public static boolean isRunning() { return instance != null; }
     public static DoubaoAccessibilityService getInstance() { return instance; }
     public String getDiagnostics() {
-        return "DoubaoVoiceFollower 3.1.1\nAndroid " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT
+        return "DoubaoVoiceFollower 3.2.0\nAndroid " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT
                 + " " + Build.MANUFACTURER + " " + Build.MODEL + "\nBuild " + Build.DISPLAY
                 + "\n" + (echoStatus == null ? "aec=not started" : echoStatus.diagnostic())
+                + "\nreference=" + PlaybackReferenceService.status()
                 + "\n" + String.join("\n", diagnostics);
     }
 
@@ -217,6 +219,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         detector = new SpeechDetector();
         playbackGate = new PlaybackGate();
         echoStatus = null;
+        referenceStatus = null;
         lastEchoDiagnostic = "";
         nextPlaybackPoll = 0;
         playbackActive = false;
@@ -229,8 +232,8 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         lastAudio = now();
         tracking = true;
         message = "等待豆包前台";
-        audio = new VoiceTracker(TrackerSettings.isEchoEnabled(this), new VoiceTracker.Listener() {
-            @Override public void onFrame(long at, float rms, boolean vad, boolean silenced, EchoStatus echo) {
+        audio = new VoiceTracker(TrackerSettings.isEchoEnabled(this), allowInterruption, new VoiceTracker.Listener() {
+            @Override public void onFrame(long at, float rms, boolean vad, boolean silenced, EchoStatus echo, ReferenceStatus reference) {
                 main.post(() -> {
                     if (!tracking || session != currentSession || now() - at > 200) return;
                     lastAudio = at;
@@ -240,6 +243,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
                     // Drop any start candidate when the actual capture preprocessing changes.
                     if (echoStatus != null && echoStatus.ready() != echo.ready()) detector.reset();
                     echoStatus = echo;
+                    referenceStatus = reference;
                     String echoDiagnostic = echo.diagnostic();
                     if (!lastEchoDiagnostic.equals(echoDiagnostic)) {
                         lastEchoDiagnostic = echoDiagnostic;
@@ -274,6 +278,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         tracking = false;
         ++session;
         if (audio != null) { audio.stop(); audio = null; }
+        stopService(new Intent(this, PlaybackReferenceService.class));
         detector.reset();
         if (hold != null) hold.update(now(), false, false, false, false);
         message = reason;
@@ -336,6 +341,9 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             log(String.format(Locale.US, "state=%s foreground=%s rms=%.5f vad=%s speaking=%s start=%.5f end=%.5f recording=%s micMuted=%s playback=%s gate=%s observation=%s",
                     hold.state, screen.foreground, measuredRms, lastVad, detector.speaking, detector.onset, detector.ending,
                     screen.recording, micSilenced, playbackActive, playbackGate.blocked, observationOnly));
+            if (referenceStatus != null && allowInterruption) log(String.format(Locale.US,
+                    "referenceReady=%s raw=%.5f far=%.5f residual=%.5f %s", referenceStatus.ready,
+                    referenceStatus.rawRms, referenceStatus.referenceRms, measuredRms, referenceStatus.message));
         }
     }
 
@@ -359,10 +367,12 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             } catch (RuntimeException e) { active = true; }
             active |= screen.foreground == DoubaoWindowInspector.Foreground.DOUBAO
                     && time - screen.at < 600 && screen.playing;
+            active |= referenceStatus != null && referenceStatus.referenceRms >= 0.0003f;
             if (active != playbackActive) log("playback=" + active);
             playbackActive = active;
         }
-        playbackGate.update(time, playbackActive, allowInterruption, echoStatus != null && echoStatus.ready());
+        // A hardware-AEC enabled flag is never sufficient to authorize barge-in.
+        playbackGate.update(time, playbackActive, allowInterruption, referenceStatus != null && referenceStatus.ready);
     }
     private boolean unlocked() {
         return getSystemService(PowerManager.class).isInteractive()
@@ -438,7 +448,8 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         status.setText(message + (tracking ? String.format(Locale.CHINA,
                 "\n音量 %.2f%%  起 %.2f%% / 止 %.2f%%\n%s", measuredRms * 100,
                 detector.onset * 100, detector.ending * 100,
-                echoStatus == null ? "回声消除初始化中" : echoStatus.label()) : ""));
+                allowInterruption ? (referenceStatus == null ? "播放参考初始化中" : referenceStatus.message)
+                        : (echoStatus == null ? "回声消除初始化中" : echoStatus.label())) : ""));
         startButton.setEnabled(!tracking && (hold == null || !hold.busy()));
         stopButton.setEnabled(tracking || hold != null && hold.busy());
     }

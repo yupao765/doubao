@@ -3,14 +3,16 @@ package com.codex.doubaomictracker;
 import android.Manifest;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
+import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
@@ -32,6 +34,7 @@ import java.nio.charset.StandardCharsets;
 public class MainActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 1001;
     private static final int EXPORT_DIAGNOSTICS = 1002;
+    private static final int CAPTURE_REFERENCE = 1003;
     private static final String DOUBAO_PACKAGE = "com.larus.nova";
 
     private TextView permissionStatusView;
@@ -39,6 +42,13 @@ public class MainActivity extends Activity {
     private TextView endingVolumeValueView;
     private TextView releaseDelayValueView;
     private Switch automaticEndingSwitch;
+    private Switch interruptionSwitch;
+    private boolean updatingInterruption;
+    private boolean referencePermissionPending;
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private final Runnable statusRefresh = new Runnable() {
+        @Override public void run() { updateStatus(); main.postDelayed(this, 1000); }
+    };
     private Button setupButton;
     private Button overlayButton;
     private Button doubaoButton;
@@ -54,6 +64,8 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         updateStatus();
+        main.removeCallbacks(statusRefresh);
+        main.post(statusRefresh);
 
         if (isAccessibilityEnabled()) {
             DoubaoAccessibilityService service = DoubaoAccessibilityService.getInstance();
@@ -63,6 +75,11 @@ public class MainActivity extends Activity {
         }
     }
 
+    @Override protected void onPause() {
+        main.removeCallbacks(statusRefresh);
+        super.onPause();
+    }
+
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
@@ -70,6 +87,12 @@ public class MainActivity extends Activity {
             return;
         }
         updateStatus();
+        if (referencePermissionPending) {
+            referencePermissionPending = false;
+            if (hasAudioPermission()) authorizeReference();
+            else setInterruptionChecked(false);
+            return;
+        }
         if (hasAudioPermission() && openAccessibilityAfterPermission) {
             openAccessibilityAfterPermission = false;
             openAccessibilitySettings();
@@ -90,7 +113,7 @@ public class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title, matchWrap());
 
-        TextView subtitle = text("3.1.1 · 播放保护版", 15, 0xFF596273);
+        TextView subtitle = text("3.2.0 · 参考音频打断实验版", 15, 0xFF596273);
         subtitle.setGravity(Gravity.CENTER_HORIZONTAL);
         subtitle.setLineSpacing(dp(3), 1f);
         LinearLayout.LayoutParams subtitleParams = matchWrap();
@@ -120,23 +143,18 @@ public class MainActivity extends Activity {
             audioSettingsChanged();
         });
         root.addView(echoSwitch, matchWrap());
-        Switch interruptionSwitch = settingSwitch("外放插话（高风险实验）", TrackerSettings.isInterruptionEnabled(this));
+        interruptionSwitch = settingSwitch("语音打断（参考音频）", TrackerSettings.isInterruptionEnabled(this));
         interruptionSwitch.setOnCheckedChangeListener((view, checked) -> {
+            if (updatingInterruption) return;
             if (checked) {
-                new AlertDialog.Builder(this).setTitle("可能误打断豆包")
-                        .setMessage("系统显示回声消除已开启，也可能仍把豆包声音当成人声。")
-                        .setPositiveButton("仍要启用", (dialog, which) -> {
-                            TrackerSettings.setInterruptionEnabled(this, true);
-                            audioSettingsChanged();
-                        })
-                        .setNegativeButton("保持关闭", (dialog, which) -> view.setChecked(false))
-                        .setOnCancelListener(dialog -> view.setChecked(false)).show();
+                authorizeReference();
             } else {
                 TrackerSettings.setInterruptionEnabled(this, false);
                 audioSettingsChanged();
             }
         });
         root.addView(interruptionSwitch, matchWrap());
+        root.addView(actionButton("授权豆包播放音频", false, v -> authorizeReference()));
         Switch observationSwitch = settingSwitch("只检测，不点击", TrackerSettings.isObservationOnly(this));
         observationSwitch.setOnCheckedChangeListener((view, checked) -> {
             TrackerSettings.setObservationOnly(this, checked);
@@ -308,11 +326,57 @@ public class MainActivity extends Activity {
     private void audioSettingsChanged() {
         DoubaoAccessibilityService service = DoubaoAccessibilityService.getInstance();
         if (service != null) service.stopForSettings();
+        stopService(new Intent(this, PlaybackReferenceService.class));
         Toast.makeText(this, "设置已保存，请重新启用跟踪", Toast.LENGTH_SHORT).show();
+    }
+
+    private void setInterruptionChecked(boolean value) {
+        updatingInterruption = true;
+        interruptionSwitch.setChecked(value);
+        updatingInterruption = false;
+    }
+
+    private void authorizeReference() {
+        if (!hasAudioPermission()) {
+            referencePermissionPending = true;
+            requestRequiredPermissions();
+            return;
+        }
+        DoubaoAccessibilityService service = DoubaoAccessibilityService.getInstance();
+        if (service != null) service.stopForSettings();
+        stopService(new Intent(this, PlaybackReferenceService.class));
+        TrackerSettings.setInterruptionEnabled(this, false);
+        setInterruptionChecked(false);
+        try {
+            startActivityForResult(getSystemService(MediaProjectionManager.class).createScreenCaptureIntent(), CAPTURE_REFERENCE);
+        } catch (RuntimeException e) {
+            Toast.makeText(this, "系统播放捕获不可用", Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == CAPTURE_REFERENCE) {
+            if (resultCode != RESULT_OK || data == null) {
+                TrackerSettings.setInterruptionEnabled(this, false);
+                setInterruptionChecked(false);
+                Toast.makeText(this, "未授权，播放保护保持开启", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            try {
+                startForegroundService(new Intent(this, PlaybackReferenceService.class)
+                        .putExtra(PlaybackReferenceService.GRANT, data));
+                TrackerSettings.setInterruptionEnabled(this, true);
+                setInterruptionChecked(true);
+                Toast.makeText(this, "已授权，请打开豆包并启用跟踪", Toast.LENGTH_LONG).show();
+            } catch (RuntimeException e) {
+                TrackerSettings.setInterruptionEnabled(this, false);
+                setInterruptionChecked(false);
+                Toast.makeText(this, "播放参考启动受限，请重新授权", Toast.LENGTH_LONG).show();
+            }
+            updateStatus();
+            return;
+        }
         if (requestCode != EXPORT_DIAGNOSTICS || resultCode != RESULT_OK || data == null || data.getData() == null) return;
         DoubaoAccessibilityService service = DoubaoAccessibilityService.getInstance();
         String log = service == null ? "服务尚未连接，无诊断记录" : service.getDiagnostics();
@@ -420,6 +484,7 @@ public class MainActivity extends Activity {
                 (audioEnabled ? "✓" : "○") + " 麦克风权限：" + (audioEnabled ? "已开启" : "未开启")
                         + "\n"
                         + (accessibilityEnabled ? "✓" : "○") + " 无障碍服务：" + (accessibilityEnabled ? "已开启" : "未开启")
+                        + "\n播放参考：" + (PlaybackReferenceService.active() ? "已授权，等待检测结果" : PlaybackReferenceService.status())
         );
 
         boolean ready = audioEnabled && accessibilityEnabled;
