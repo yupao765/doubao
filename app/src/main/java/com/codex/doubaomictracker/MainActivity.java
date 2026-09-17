@@ -89,7 +89,7 @@ public class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title, matchWrap());
 
-        TextView subtitle = text("3.0.1", 15, 0xFF596273);
+        TextView subtitle = text("3.1.0 · 回声消除实验版", 15, 0xFF596273);
         subtitle.setGravity(Gravity.CENTER_HORIZONTAL);
         subtitle.setLineSpacing(dp(3), 1f);
         LinearLayout.LayoutParams subtitleParams = matchWrap();
@@ -111,6 +111,26 @@ public class MainActivity extends Activity {
 
         overlayButton = actionButton("显示悬浮控制", false, v -> showFloatingControls());
         root.addView(overlayButton);
+
+        root.addView(sectionTitle("声音处理"), withTopMargin(dp(22)));
+        Switch echoSwitch = settingSwitch("系统回声消除", TrackerSettings.isEchoEnabled(this));
+        echoSwitch.setOnCheckedChangeListener((view, checked) -> {
+            TrackerSettings.setEchoEnabled(this, checked);
+            audioSettingsChanged();
+        });
+        root.addView(echoSwitch, matchWrap());
+        Switch interruptionSwitch = settingSwitch("外放时允许插话（实验）", TrackerSettings.isInterruptionEnabled(this));
+        interruptionSwitch.setOnCheckedChangeListener((view, checked) -> {
+            TrackerSettings.setInterruptionEnabled(this, checked);
+            audioSettingsChanged();
+        });
+        root.addView(interruptionSwitch, matchWrap());
+        Switch observationSwitch = settingSwitch("只检测，不点击", TrackerSettings.isObservationOnly(this));
+        observationSwitch.setOnCheckedChangeListener((view, checked) -> {
+            TrackerSettings.setObservationOnly(this, checked);
+            audioSettingsChanged();
+        });
+        root.addView(observationSwitch, matchWrap());
 
         root.addView(sectionTitle("麦克风灵敏度"), withTopMargin(dp(22)));
 
@@ -261,6 +281,22 @@ public class MainActivity extends Activity {
             return;
         }
         showFloatingControls();
+    }
+
+    private Switch settingSwitch(String label, boolean checked) {
+        Switch view = new Switch(this);
+        view.setText(label);
+        view.setTextSize(16);
+        view.setTextColor(0xFF111827);
+        view.setChecked(checked);
+        view.setPadding(0, dp(10), 0, dp(10));
+        return view;
+    }
+
+    private void audioSettingsChanged() {
+        DoubaoAccessibilityService service = DoubaoAccessibilityService.getInstance();
+        if (service != null) service.stopForSettings();
+        Toast.makeText(this, "设置已保存，请重新启用跟踪", Toast.LENGTH_SHORT).show();
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {

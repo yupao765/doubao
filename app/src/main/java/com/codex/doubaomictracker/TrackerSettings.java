@@ -24,6 +24,30 @@ public final class TrackerSettings {
     private TrackerSettings() {
     }
 
+    public static boolean isEchoEnabled(Context context) {
+        return context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getBoolean("echo_enabled", true);
+    }
+
+    public static void setEchoEnabled(Context context, boolean value) {
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putBoolean("echo_enabled", value).apply();
+    }
+
+    public static boolean isInterruptionEnabled(Context context) {
+        return context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getBoolean("allow_interruption", true);
+    }
+
+    public static void setInterruptionEnabled(Context context, boolean value) {
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putBoolean("allow_interruption", value).apply();
+    }
+
+    public static boolean isObservationOnly(Context context) {
+        return context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getBoolean("observation_only", false);
+    }
+
+    public static void setObservationOnly(Context context, boolean value) {
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putBoolean("observation_only", value).apply();
+    }
+
     public static int getSensitivity(Context context) {
         SharedPreferences preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE);
         return clampSensitivity(preferences.getInt(KEY_SENSITIVITY, DEFAULT_SENSITIVITY));

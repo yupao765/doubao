@@ -16,15 +16,19 @@ import com.konovalov.vad.webrtc.config.SampleRate;
 /** Capture only. Conversation and gesture state belongs to the service thread. */
 public final class VoiceTracker {
     public interface Listener {
-        void onFrame(long capturedAt, float rms, boolean speech, boolean silenced);
+        void onFrame(long capturedAt, float rms, boolean speech, boolean silenced, EchoStatus echo);
         void onError(String message);
     }
     private final Listener listener;
+    private final boolean echoEnabled;
     private volatile boolean running;
     private volatile AudioRecord recorder;
     private Thread worker;
 
-    public VoiceTracker(Listener listener) { this.listener = listener; }
+    public VoiceTracker(boolean echoEnabled, Listener listener) {
+        this.echoEnabled = echoEnabled;
+        this.listener = listener;
+    }
     public synchronized void start() {
         if (worker != null) return;
         running = true;
@@ -42,12 +46,16 @@ public final class VoiceTracker {
     private void capture() {
         AudioRecord local = null;
         VadWebRTC vad = null;
+        EchoProcessor echo = null;
         try {
+            echo = new EchoProcessor(echoEnabled);
             int minimum = AudioRecord.getMinBufferSize(16000,
                     AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
             if (minimum <= 0) throw new IllegalStateException("不支持16kHz录音");
             AudioRecord.Builder builder = new AudioRecord.Builder()
-                    .setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
+                    .setAudioSource(echo.useCommunicationSource() && Build.VERSION.SDK_INT >= 30
+                            ? MediaRecorder.AudioSource.VOICE_COMMUNICATION
+                            : MediaRecorder.AudioSource.VOICE_RECOGNITION)
                     .setAudioFormat(new AudioFormat.Builder().setSampleRate(16000)
                             .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
                             .setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
@@ -58,6 +66,7 @@ public final class VoiceTracker {
             if (!running) return;
             if (local.getState() != AudioRecord.STATE_INITIALIZED)
                 throw new IllegalStateException("麦克风初始化失败");
+            echo.attach(local.getAudioSessionId());
             vad = Vad.builder().setSampleRate(SampleRate.SAMPLE_RATE_16K)
                     .setFrameSize(FrameSize.FRAME_SIZE_320).setMode(Mode.AGGRESSIVE)
                     .setSpeechDurationMs(0).setSilenceDurationMs(0).build();
@@ -72,24 +81,23 @@ public final class VoiceTracker {
                 offset += read;
                 if (offset != frame.length) continue;
                 offset = 0;
-                boolean silenced = false;
-                if (Build.VERSION.SDK_INT >= 29) {
-                    AudioRecordingConfiguration config = local.getActiveRecordingConfiguration();
-                    silenced = config != null && config.isClientSilenced();
-                }
+                AudioRecordingConfiguration config = local.getActiveRecordingConfiguration();
+                boolean silenced = config != null && config.isClientSilenced();
                 double energy = 0;
                 for (short value : frame) {
                     double normalized = value / 32768.0;
                     energy += normalized * normalized;
                 }
                 listener.onFrame(SystemClock.elapsedRealtime(),
-                        (float) Math.sqrt(energy / frame.length), vad.isSpeech(frame), silenced);
+                        (float) Math.sqrt(energy / frame.length), vad.isSpeech(frame), silenced,
+                        echo.inspect(config));
             }
         } catch (Exception | LinkageError e) {
             if (running) listener.onError("录音不可用：" + e.getMessage());
         } finally {
             running = false;
             recorder = null;
+            if (echo != null) echo.close();
             if (local != null) local.release();
             if (vad != null) vad.close();
         }

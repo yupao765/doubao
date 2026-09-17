@@ -41,6 +41,14 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     private final ExecutorService windowWorker = Executors.newSingleThreadExecutor();
     private final ArrayDeque<String> diagnostics = new ArrayDeque<>();
     private SpeechDetector detector = new SpeechDetector();
+    private PlaybackGate playbackGate = new PlaybackGate();
+    private EchoStatus echoStatus;
+    private boolean observationOnly;
+    private boolean allowInterruption;
+    private boolean playbackActive;
+    private long nextPlaybackPoll;
+    private float measuredRms;
+    private String lastEchoDiagnostic = "";
     private DoubaoWindowInspector.Snapshot screen = DoubaoWindowInspector.Snapshot.unknown();
     private VoiceTracker audio;
     private HoldController hold;
@@ -56,6 +64,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     private boolean scanning;
     private boolean micSilenced;
     private boolean lastVad;
+    private boolean loggedSpeaking;
     private long session;
     private long windowRevision;
     private long lastScan;
@@ -78,9 +87,13 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     public static boolean isRunning() { return instance != null; }
     public static DoubaoAccessibilityService getInstance() { return instance; }
     public String getDiagnostics() {
-        return "DoubaoVoiceFollower 3.0.1\nAndroid " + Build.VERSION.RELEASE + " "
-                + Build.MANUFACTURER + " " + Build.MODEL + "\n" + String.join("\n", diagnostics);
+        return "DoubaoVoiceFollower 3.1.0\nAndroid " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT
+                + " " + Build.MANUFACTURER + " " + Build.MODEL + "\nBuild " + Build.DISPLAY
+                + "\n" + (echoStatus == null ? "aec=not started" : echoStatus.diagnostic())
+                + "\n" + String.join("\n", diagnostics);
     }
+
+    public void stopForSettings() { stopTracking("设置已保存，待重新启动"); }
 
     @Override protected void onServiceConnected() {
         instance = this;
@@ -131,7 +144,8 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         status.setTextSize(12);
         status.setGravity(Gravity.CENTER);
         status.setMaxLines(3);
-        column.addView(status, new LinearLayout.LayoutParams(-1, dp(54)));
+        column.addView(status, new LinearLayout.LayoutParams(-1,
+                Math.max(dp(54), status.getLineHeight() * 3 + dp(8))));
         LinearLayout row = new LinearLayout(this);
         startButton = button("启用麦克风跟踪", 0xFF176BFF);
         stopButton = button("结束跟踪", 0xFF454B54);
@@ -201,22 +215,41 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         }
         long currentSession = ++session;
         detector = new SpeechDetector();
+        playbackGate = new PlaybackGate();
+        echoStatus = null;
+        lastEchoDiagnostic = "";
+        nextPlaybackPoll = 0;
+        playbackActive = false;
+        measuredRms = 0;
+        observationOnly = TrackerSettings.isObservationOnly(this);
+        allowInterruption = TrackerSettings.isInterruptionEnabled(this);
         hold.reset();
         micSilenced = false;
+        loggedSpeaking = false;
         lastAudio = now();
         tracking = true;
         message = "等待豆包前台";
-        audio = new VoiceTracker(new VoiceTracker.Listener() {
-            @Override public void onFrame(long at, float rms, boolean vad, boolean silenced) {
+        audio = new VoiceTracker(TrackerSettings.isEchoEnabled(this), new VoiceTracker.Listener() {
+            @Override public void onFrame(long at, float rms, boolean vad, boolean silenced, EchoStatus echo) {
                 main.post(() -> {
                     if (!tracking || session != currentSession || now() - at > 200) return;
                     lastAudio = at;
                     micSilenced = silenced;
                     lastVad = vad;
+                    measuredRms = rms;
+                    // Drop any start candidate when the actual capture preprocessing changes.
+                    if (echoStatus != null && echoStatus.ready() != echo.ready()) detector.reset();
+                    echoStatus = echo;
+                    String echoDiagnostic = echo.diagnostic();
+                    if (!lastEchoDiagnostic.equals(echoDiagnostic)) {
+                        lastEchoDiagnostic = echoDiagnostic;
+                        log(echoDiagnostic);
+                    }
                     if (silenced) { stopTracking("麦克风被系统静音，已停止跟踪"); return; }
+                    updatePlayback();
                     boolean transientWindowGap = screen.foreground == DoubaoWindowInspector.Foreground.UNKNOWN
                             && now() - lastKnownForeground < 450 && unlocked();
-                    if (allowsAudio() || transientWindowGap) {
+                    if ((allowsAudio() || transientWindowGap) && (observationOnly || !playbackGate.blocked)) {
                         detector.accept(at, rms, vad, TrackerSettings.minimumSpeechRms(DoubaoAccessibilityService.this),
                                 TrackerSettings.ambientMultiplier(DoubaoAccessibilityService.this),
                                 TrackerSettings.endingVolumeRms(DoubaoAccessibilityService.this),
@@ -231,7 +264,8 @@ public class DoubaoAccessibilityService extends AccessibilityService {
             }
         });
         audio.start();
-        log("启动跟踪");
+        log("启动跟踪 observationOnly=" + observationOnly + " allowInterruption=" + allowInterruption
+                + " echoRequested=" + TrackerSettings.isEchoEnabled(this));
         main.removeCallbacks(heartbeat);
         main.post(heartbeat);
     }
@@ -252,6 +286,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
 
     private void tick() {
         long time = now();
+        updatePlayback();
         if (tracking && time - lastAudio > 800) { stopTracking("麦克风数据中断，已停止跟踪"); return; }
         if (!destroyed && time - lastScan >= 180) scanWindow();
         detector.tick(time);
@@ -260,15 +295,21 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         boolean continueAllowed = foreground || unlocked()
                 && screen.foreground == DoubaoWindowInspector.Foreground.UNKNOWN
                 && time - lastKnownForeground < 450;
-        if (!continueAllowed || playing()) detector.reset();
+        if (!continueAllowed || !observationOnly && playbackGate.blocked) detector.reset();
+        if (tracking && loggedSpeaking != detector.speaking) {
+            loggedSpeaking = detector.speaking;
+            log("speech=" + loggedSpeaking + " rms=" + measuredRms + " playback=" + playbackActive
+                    + " gate=" + playbackGate.blocked + " observation=" + observationOnly);
+        }
         boolean targetReady = foreground && screen.target != null && !screen.recording && !targetCovered();
         boolean uiEnded = foreground && screen.at > verificationStarted && !screen.recording
                 && screen.target != null;
         // Leaving Doubao confirms no further automation there, but never claims a send.
         if (screen.foreground == DoubaoWindowInspector.Foreground.OTHER && hold.state == HoldController.State.VERIFYING)
             uiEnded = true;
-        hold.update(time, tracking && detector.speaking && !playing(), targetReady && !playing(),
-                tracking && continueAllowed && !playing(), uiEnded);
+        hold.update(time, tracking && detector.speaking && !observationOnly && !playbackGate.blocked,
+                playbackGate.allowsGesture(observationOnly, targetReady),
+                tracking && playbackGate.allowsGesture(observationOnly, continueAllowed), uiEnded);
         if (hold.state == HoldController.State.HOLDING && time - gestureStarted > 1600
                 && foreground && screen.target != null && !screen.recording) {
             stopTracking("按压未进入录音，请检查豆包界面"); return;
@@ -277,12 +318,13 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         if (tracking && hold.state == HoldController.State.IDLE) {
             if (!unlocked()) message = "锁屏暂停";
             else if (!foreground) message = "等待豆包前台";
-            else if (playing()) message = "豆包播放中";
+            else if (observationOnly) message = detector.speaking ? "检测到说话（不点击）" : "仅检测，未触发说话";
+            else if (playbackGate.blocked) message = playbackActive ? "播放保护中，暂停按压" : "等待播放尾音结束";
             else if (screen.recording) message = "等待当前录音结束";
             else if (screen.target == null) message = "未找到按住说话按钮";
             else if (targetCovered()) message = "悬浮窗遮挡了说话按钮";
             else if (detector.awaitingQuiet) message = "已达30秒，等待停顿";
-            else message = "监听中";
+            else message = playbackActive ? "外放插话检测中（实验）" : "监听中";
         } else if (tracking && hold.state == HoldController.State.HOLDING) {
             long remaining = detector.remaining(time);
             message = remaining < 0 ? (screen.recording ? "录音中" : "按压中，待确认")
@@ -291,20 +333,32 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         if (time - lastDisplay >= 100) { lastDisplay = time; render(); }
         if (tracking && time - lastLog >= 1000) {
             lastLog = time;
-            log(String.format(Locale.US, "state=%s foreground=%s rms=%.5f vad=%s start=%.5f end=%.5f recording=%s micMuted=%s",
-                    hold.state, screen.foreground, detector.rms, lastVad, detector.onset, detector.ending,
-                    screen.recording, micSilenced));
+            log(String.format(Locale.US, "state=%s foreground=%s rms=%.5f vad=%s speaking=%s start=%.5f end=%.5f recording=%s micMuted=%s playback=%s gate=%s observation=%s",
+                    hold.state, screen.foreground, measuredRms, lastVad, detector.speaking, detector.onset, detector.ending,
+                    screen.recording, micSilenced, playbackActive, playbackGate.blocked, observationOnly));
         }
     }
 
     private boolean allowsAudio() {
         return unlocked() && screen.foreground == DoubaoWindowInspector.Foreground.DOUBAO
-                && now() - screen.at < 600 && !playing();
+                && now() - screen.at < 600;
     }
-    private boolean playing() {
-        AudioManager manager = getSystemService(AudioManager.class);
-        return screen.foreground == DoubaoWindowInspector.Foreground.DOUBAO
-                && screen.playing && manager != null && manager.isMusicActive();
+    private void updatePlayback() {
+        long time = now();
+        if (time >= nextPlaybackPoll) {
+            nextPlaybackPoll = time + 50;
+            boolean active;
+            try {
+                AudioManager manager = getSystemService(AudioManager.class);
+                // Global media is only a conservative guard, never proof of Doubao's identity.
+                active = manager == null || manager.isMusicActive();
+            } catch (RuntimeException e) { active = true; }
+            active |= screen.foreground == DoubaoWindowInspector.Foreground.DOUBAO
+                    && time - screen.at < 600 && screen.playing;
+            if (active != playbackActive) log("playback=" + active);
+            playbackActive = active;
+        }
+        playbackGate.update(time, playbackActive, allowInterruption, echoStatus != null && echoStatus.ready());
     }
     private boolean unlocked() {
         return getSystemService(PowerManager.class).isInteractive()
@@ -341,7 +395,9 @@ public class DoubaoAccessibilityService extends AccessibilityService {
 
     private void dispatchStroke(long token, boolean first, boolean finish) {
         if (first) {
-            if (!allowsAudio() || screen.target == null || screen.recording || targetCovered()) {
+            updatePlayback();
+            if (!playbackGate.allowsGesture(observationOnly, allowsAudio())
+                    || screen.target == null || screen.recording || targetCovered()) {
                 hold.rejected(token, now(), true); return;
             }
             holdX = screen.target.centerX();
@@ -376,8 +432,9 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     private void render() {
         if (status == null) return;
         status.setText(message + (tracking ? String.format(Locale.CHINA,
-                "\n音量 %.2f%%  起 %.2f%% / 止 %.2f%%", detector.rms * 100,
-                detector.onset * 100, detector.ending * 100) : ""));
+                "\n音量 %.2f%%  起 %.2f%% / 止 %.2f%%\n%s", measuredRms * 100,
+                detector.onset * 100, detector.ending * 100,
+                echoStatus == null ? "回声消除初始化中" : echoStatus.label()) : ""));
         startButton.setEnabled(!tracking && (hold == null || !hold.busy()));
         stopButton.setEnabled(tracking || hold != null && hold.busy());
     }
