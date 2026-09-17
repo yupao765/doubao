@@ -249,7 +249,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
                     updatePlayback();
                     boolean transientWindowGap = screen.foreground == DoubaoWindowInspector.Foreground.UNKNOWN
                             && now() - lastKnownForeground < 450 && unlocked();
-                    if ((allowsAudio() || transientWindowGap) && (observationOnly || !playbackGate.blocked)) {
+                    if ((allowsAudio() || transientWindowGap) && (observationOnly || !audioBlocked())) {
                         detector.accept(at, rms, vad, TrackerSettings.minimumSpeechRms(DoubaoAccessibilityService.this),
                                 TrackerSettings.ambientMultiplier(DoubaoAccessibilityService.this),
                                 TrackerSettings.endingVolumeRms(DoubaoAccessibilityService.this),
@@ -295,7 +295,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         boolean continueAllowed = foreground || unlocked()
                 && screen.foreground == DoubaoWindowInspector.Foreground.UNKNOWN
                 && time - lastKnownForeground < 450;
-        if (!continueAllowed || !observationOnly && playbackGate.blocked) detector.reset();
+        if (!continueAllowed || !observationOnly && audioBlocked()) detector.reset();
         if (tracking && loggedSpeaking != detector.speaking) {
             loggedSpeaking = detector.speaking;
             log("speech=" + loggedSpeaking + " rms=" + measuredRms + " playback=" + playbackActive
@@ -307,9 +307,9 @@ public class DoubaoAccessibilityService extends AccessibilityService {
         // Leaving Doubao confirms no further automation there, but never claims a send.
         if (screen.foreground == DoubaoWindowInspector.Foreground.OTHER && hold.state == HoldController.State.VERIFYING)
             uiEnded = true;
-        hold.update(time, tracking && detector.speaking && !observationOnly && !playbackGate.blocked,
+        hold.update(time, tracking && detector.speaking && !observationOnly && !audioBlocked(),
                 playbackGate.allowsGesture(observationOnly, targetReady),
-                tracking && playbackGate.allowsGesture(observationOnly, continueAllowed), uiEnded);
+                tracking && playbackGate.allowsContinuation(observationOnly, continueAllowed), uiEnded);
         if (hold.state == HoldController.State.HOLDING && time - gestureStarted > 1600
                 && foreground && screen.target != null && !screen.recording) {
             stopTracking("按压未进入录音，请检查豆包界面"); return;
@@ -342,6 +342,10 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     private boolean allowsAudio() {
         return unlocked() && screen.foreground == DoubaoWindowInspector.Foreground.DOUBAO
                 && now() - screen.at < 600;
+    }
+    private boolean audioBlocked() {
+        return hold.state == HoldController.State.HOLDING
+                ? playbackGate.continuationBlocked : playbackGate.blocked;
     }
     private void updatePlayback() {
         long time = now();

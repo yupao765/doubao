@@ -71,5 +71,25 @@ public class PlaybackGateTest {
         assertTrue(gate.allowsGesture(false, true));
         gate.update(200, true, true, false);
         assertFalse(gate.allowsGesture(false, true));
+        assertFalse(gate.allowsContinuation(true, true));
+        assertFalse(gate.allowsContinuation(false, false));
+    }
+
+    @Test public void playbackStoppingOnDownDoesNotReleaseUserSpeech() {
+        PlaybackGate gate = new PlaybackGate();
+        gate.update(100, true, true, true);
+        gate.update(400, true, true, true);
+        assertTrue(gate.allowsGesture(false, true));
+        gate.update(420, false, true, true);
+        assertFalse("New presses wait for the tail", gate.allowsGesture(false, true));
+        assertTrue("Existing press continues", gate.allowsContinuation(false, true));
+        assertFalse(gate.continuationBlocked);
+    }
+
+    @Test public void losingEchoDuringPlaybackBlocksExistingPressToo() {
+        PlaybackGate gate = new PlaybackGate();
+        gate.update(100, true, true, true);
+        gate.update(400, true, true, false);
+        assertFalse(gate.allowsContinuation(false, true));
     }
 }

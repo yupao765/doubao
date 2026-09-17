@@ -6,6 +6,7 @@ final class PlaybackGate {
     private long startedAt;
     private long tailUntil;
     boolean blocked;
+    boolean continuationBlocked;
 
     void update(long now, boolean active, boolean allowInterruption, boolean echoReady) {
         if (active && !playing) startedAt = now;
@@ -14,9 +15,15 @@ final class PlaybackGate {
         // Let the acoustic path settle at playback start; discard the speaker tail at the end.
         blocked = active ? !allowInterruption || !echoReady || now - startedAt < 250
                 : now < tailUntil;
+        // Doubao normally stops playback on DOWN. Its tail must not terminate that new utterance.
+        continuationBlocked = active && (!allowInterruption || !echoReady);
     }
 
     boolean allowsGesture(boolean observationOnly, boolean foregroundReady) {
         return !observationOnly && foregroundReady && !blocked;
+    }
+
+    boolean allowsContinuation(boolean observationOnly, boolean foregroundReady) {
+        return !observationOnly && foregroundReady && !continuationBlocked;
     }
 }
