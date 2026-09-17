@@ -10,7 +10,7 @@ final class PlaybackGate {
 
     void update(long now, boolean active, boolean allowInterruption, boolean echoReady) {
         if (active && !playing) startedAt = now;
-        if (!active && playing) tailUntil = now + 300;
+        if (!active && playing) tailUntil = now + 800;
         playing = active;
         // Let the acoustic path settle at playback start; discard the speaker tail at the end.
         blocked = active ? !allowInterruption || !echoReady || now - startedAt < 250

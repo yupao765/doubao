@@ -46,9 +46,9 @@ public class PlaybackGateTest {
         PlaybackGate gate = new PlaybackGate();
         gate.update(100, true, true, true);
         gate.update(1000, false, true, true);
-        gate.update(1299, false, true, true);
+        gate.update(1799, false, true, true);
         assertTrue(gate.blocked);
-        gate.update(1300, false, true, true);
+        gate.update(1800, false, true, true);
         assertFalse(gate.blocked);
     }
 
@@ -91,5 +91,27 @@ public class PlaybackGateTest {
         gate.update(100, true, true, true);
         gate.update(400, true, true, false);
         assertFalse(gate.allowsContinuation(false, true));
+    }
+
+    @Test public void normalModeNeverUnlocksJustBecauseEchoIsEnabled() {
+        PlaybackGate gate = new PlaybackGate();
+        for (long time = 0; time < 60000; time += 20) {
+            gate.update(time, true, false, true);
+            assertFalse("No timeout may authorize a press during playback", gate.allowsGesture(false, true));
+        }
+    }
+
+    @Test public void shortPlaybackGapsCannotArmNewPress() {
+        PlaybackGate gate = new PlaybackGate();
+        gate.update(0, true, false, true);
+        gate.update(1000, false, false, true);
+        gate.update(1600, false, false, true);
+        assertFalse(gate.allowsGesture(false, true));
+        gate.update(1700, true, false, true);
+        gate.update(2000, false, false, true);
+        gate.update(2799, false, false, true);
+        assertFalse(gate.allowsGesture(false, true));
+        gate.update(2800, false, false, true);
+        assertTrue(gate.allowsGesture(false, true));
     }
 }

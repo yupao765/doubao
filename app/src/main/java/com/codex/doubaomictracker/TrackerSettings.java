@@ -20,6 +20,8 @@ public final class TrackerSettings {
     private static final String KEY_RELEASE_DELAY_MS = "release_delay_ms";
     private static final String KEY_ENDING_VOLUME = "ending_volume_tenths_percent";
     private static final String KEY_AUTO_ENDING = "automatic_ending_detection";
+    // Do not inherit 3.1.0's unsafe default or a previously saved true value.
+    private static final String KEY_INTERRUPTION_OPT_IN = "allow_interruption_opt_in_v311";
 
     private TrackerSettings() {
     }
@@ -33,11 +35,11 @@ public final class TrackerSettings {
     }
 
     public static boolean isInterruptionEnabled(Context context) {
-        return context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getBoolean("allow_interruption", true);
+        return context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getBoolean(KEY_INTERRUPTION_OPT_IN, false);
     }
 
     public static void setInterruptionEnabled(Context context, boolean value) {
-        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putBoolean("allow_interruption", value).apply();
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putBoolean(KEY_INTERRUPTION_OPT_IN, value).apply();
     }
 
     public static boolean isObservationOnly(Context context) {

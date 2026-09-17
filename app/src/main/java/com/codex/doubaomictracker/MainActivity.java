@@ -3,6 +3,7 @@ package com.codex.doubaomictracker;
 import android.Manifest;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -89,7 +90,7 @@ public class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title, matchWrap());
 
-        TextView subtitle = text("3.1.0 · 回声消除实验版", 15, 0xFF596273);
+        TextView subtitle = text("3.1.1 · 播放保护版", 15, 0xFF596273);
         subtitle.setGravity(Gravity.CENTER_HORIZONTAL);
         subtitle.setLineSpacing(dp(3), 1f);
         LinearLayout.LayoutParams subtitleParams = matchWrap();
@@ -119,10 +120,21 @@ public class MainActivity extends Activity {
             audioSettingsChanged();
         });
         root.addView(echoSwitch, matchWrap());
-        Switch interruptionSwitch = settingSwitch("外放时允许插话（实验）", TrackerSettings.isInterruptionEnabled(this));
+        Switch interruptionSwitch = settingSwitch("外放插话（高风险实验）", TrackerSettings.isInterruptionEnabled(this));
         interruptionSwitch.setOnCheckedChangeListener((view, checked) -> {
-            TrackerSettings.setInterruptionEnabled(this, checked);
-            audioSettingsChanged();
+            if (checked) {
+                new AlertDialog.Builder(this).setTitle("可能误打断豆包")
+                        .setMessage("系统显示回声消除已开启，也可能仍把豆包声音当成人声。")
+                        .setPositiveButton("仍要启用", (dialog, which) -> {
+                            TrackerSettings.setInterruptionEnabled(this, true);
+                            audioSettingsChanged();
+                        })
+                        .setNegativeButton("保持关闭", (dialog, which) -> view.setChecked(false))
+                        .setOnCancelListener(dialog -> view.setChecked(false)).show();
+            } else {
+                TrackerSettings.setInterruptionEnabled(this, false);
+                audioSettingsChanged();
+            }
         });
         root.addView(interruptionSwitch, matchWrap());
         Switch observationSwitch = settingSwitch("只检测，不点击", TrackerSettings.isObservationOnly(this));

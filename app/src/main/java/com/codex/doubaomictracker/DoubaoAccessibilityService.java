@@ -87,7 +87,7 @@ public class DoubaoAccessibilityService extends AccessibilityService {
     public static boolean isRunning() { return instance != null; }
     public static DoubaoAccessibilityService getInstance() { return instance; }
     public String getDiagnostics() {
-        return "DoubaoVoiceFollower 3.1.0\nAndroid " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT
+        return "DoubaoVoiceFollower 3.1.1\nAndroid " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT
                 + " " + Build.MANUFACTURER + " " + Build.MODEL + "\nBuild " + Build.DISPLAY
                 + "\n" + (echoStatus == null ? "aec=not started" : echoStatus.diagnostic())
                 + "\n" + String.join("\n", diagnostics);
