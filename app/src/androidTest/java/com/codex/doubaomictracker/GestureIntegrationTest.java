@@ -51,6 +51,8 @@ public class GestureIntegrationTest {
     @After public void tearDown() throws Exception {
         // Disconnecting the test service lets Android cancel any outstanding injected pointer.
         shell("settings put secure enabled_accessibility_services null");
+        long until = SystemClock.elapsedRealtime() + 5000;
+        while (GestureProbeService.instance != null && SystemClock.elapsedRealtime() < until) SystemClock.sleep(50);
         if (activity != null) instrumentation.runOnMainSync(() -> activity.finish());
     }
 
@@ -65,6 +67,7 @@ public class GestureIntegrationTest {
         // Android has already advanced the stroke id even though it rejected an empty event list.
         assertTrue(dispatch(new GestureDescription.Builder()
                 .addStroke(empty.continueStroke(path, 0, 1, false)).build()));
+        awaitUps(1);
         assertEquals(1, count(MotionEvent.ACTION_DOWN));
         assertEquals(1, count(MotionEvent.ACTION_UP));
     }
@@ -86,6 +89,7 @@ public class GestureIntegrationTest {
     }
 
     private void runConversation(long duration) throws Exception {
+        long expectedUps = count(MotionEvent.ACTION_UP) + 1;
         PressGesture gesture = new PressGesture();
         HoldController[] controller = new HoldController[1];
         CountDownLatch released = new CountDownLatch(1);
@@ -125,6 +129,7 @@ public class GestureIntegrationTest {
         assertTrue("UP callback must arrive", released.await(5, TimeUnit.SECONDS));
         instrumentation.waitForIdleSync();
         assertFalse("No rejected or cancelled gesture", failed[0]);
+        awaitUps(expectedUps);
         instrumentation.runOnMainSync(() -> controller[0].update(SystemClock.elapsedRealtime(), false, true, true, true));
         assertEquals(HoldController.State.IDLE, controller[0].state);
     }
@@ -145,6 +150,11 @@ public class GestureIntegrationTest {
     }
     private long count(int action) {
         return GestureProbeActivity.actions.stream().filter(value -> value == action).count();
+    }
+    private void awaitUps(long expected) {
+        long until = SystemClock.elapsedRealtime() + 2000;
+        while (count(MotionEvent.ACTION_UP) < expected && SystemClock.elapsedRealtime() < until) SystemClock.sleep(20);
+        assertEquals("The receiving View must observe UP", expected, count(MotionEvent.ACTION_UP));
     }
     private void shell(String command) throws Exception {
         try (InputStream input = new ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command))) {
